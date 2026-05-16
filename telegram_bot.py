@@ -6,7 +6,7 @@
 import os
 import time
 import requests
-from data_collector import get_stock_info
+from data_collector import get_stock_info, get_dividend_history
 from score_engine   import calculate_score
 from fair_value     import calculate_fair_value
 from database       import (
@@ -26,9 +26,9 @@ def _get_secret(key, fallback=""):
         pass
     return os.environ.get(key, fallback)
 
-BOT_TOKEN   = _get_secret("BOT_TOKEN",   "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM")
-MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "8251554651")
-FINNHUB_KEY = _get_secret("FINNHUB_KEY", "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0")
+BOT_TOKEN   = _get_secret("BOT_TOKEN",   "여기에_봇_토큰_입력")
+MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "여기에_내_ID_입력")
+FINNHUB_KEY = _get_secret("FINNHUB_KEY", "")
 # ────────────────────────────────────────────────────────────
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -159,7 +159,35 @@ def analyze_stock(ticker, chat_id):
         for b in bad[:3]:
             msg += f"   · {b}\n"
 
-    msg += "\n⚠️ <i>분석 결과는 참고용입니다.</i>"
+    # 배당 정보 추가
+    div_data = get_dividend_history(ticker)
+    if div_data.get("is_dividend_stock"):
+        cur_rate   = div_data.get("current_rate", 0)
+        frequency  = div_data.get("frequency", "")
+        annual     = div_data.get("annual", {})
+        div_yield_pct = (cur_rate / cur_price * 100) if cur_price > 0 else 0
+        msg += "\n\n━━━━━━━━━━━━━━━━\n"
+        msg += f"💵 <b>배당 정보 ({frequency})</b>\n"
+        msg += f"   연간 배당금:  ${cur_rate:.2f}/주\n"
+        msg += f"   배당수익률:   {div_yield_pct:.2f}%\n"
+        if annual:
+            msg += "\n   📊 연도별 배당금\n"
+            for yr in sorted(annual.keys(), reverse=True)[:3]:
+                msg += f"   {yr}년: ${annual[yr]:.2f}\n"
+    else:
+        msg += "\n\n💵 <b>배당:</b> 무배당 종목\n"
+
+    # 뉴스 추가 (Finnhub 연동 시)
+    news = data.get("news", [])
+    if news:
+        msg += "\n\n━━━━━━━━━━━━━━━━\n"
+        msg += "📰 <b>최근 뉴스 (한글)</b>\n"
+        for n in news[:3]:
+            ko  = n.get("headline_ko", "") or n.get("headline", "")
+            url = n.get("url", "")
+            msg += f"\n · <a href=\"{url}\">{ko}</a>\n"
+
+    msg += "\n\n⚠️ <i>분석 결과는 참고용입니다.</i>"
     send(chat_id, msg)
 
 
