@@ -25,9 +25,9 @@ from database       import (
 )
 
 # ── 설정 (본인 정보로 바꾸세요) ─────────────────────────────
-BOT_TOKEN   = "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM"      # BotFather에서 받은 토큰
-MY_CHAT_ID  = "8251554651"        # userinfobot에서 받은 숫자 ID
-FINNHUB_KEY = "84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0"                          # 선택 (뉴스 기능)
+BOT_TOKEN   = 8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM      # BotFather에서 받은 토큰
+MY_CHAT_ID  = 8251554651        # userinfobot에서 받은 숫자 ID
+FINNHUB_KEY = d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0"                         # 선택 (뉴스 기능)
 # ────────────────────────────────────────────────────────────
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
