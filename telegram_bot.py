@@ -1,16 +1,6 @@
 # ============================================================
-# telegram_bot.py
-# 텔레그램 봇 — 주식 분석 결과를 메시지로 받기
-#
-# 사용법:
-#   python telegram_bot.py
-#
-# 텔레그램에서:
-#   /start       → 시작 안내
-#   /분석 AAPL   → 종목 분석
-#   /관심추가 TSLA → 관심 종목 등록
-#   /관심목록    → 관심 종목 전체 보기
-#   /도움말      → 명령어 목록
+# telegram_bot.py — 워렌 버핏 주식 분석 텔레그램 봇
+# Streamlit Cloud secrets 에서 토큰/ID 자동으로 읽음
 # ============================================================
 
 import os
@@ -24,10 +14,21 @@ from database       import (
     add_watchlist, remove_watchlist, get_watchlist,
 )
 
-# ── 설정 (본인 정보로 바꾸세요) ─────────────────────────────
-BOT_TOKEN   = "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM"      # BotFather에서 받은 토큰'
-MY_CHAT_ID  = "8251554651        # userinfobot에서 받은 숫자 ID
-FINNHUB_KEY = "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0"                         # 선택 (뉴스 기능)
+# ── 설정값 읽기 (Streamlit secrets → 파일 직접 입력 순서) ────
+def _get_secret(key, fallback=""):
+    """Streamlit secrets → 환경변수 → 직접입력 순으로 읽기"""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(key, fallback)
+
+BOT_TOKEN   = _get_secret("BOT_TOKEN",   "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM")
+MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "8251554651")
+FINNHUB_KEY = _get_secret("FINNHUB_KEY", "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0")
 # ────────────────────────────────────────────────────────────
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -50,6 +51,32 @@ def grade_emoji(grade):
     return {"S":"🥇","A":"🟢","B":"🔵","C":"🟡","D":"🔴","F":"⛔"}.get(grade,"⬜")
 
 
+# ── 시작 알림 메시지 전송 ────────────────────────────────────
+def send_startup_message():
+    """봇 시작 시 텔레그램으로 알림 전송"""
+    if not MY_CHAT_ID or MY_CHAT_ID == "여기에_내_ID_입력":
+        return
+    msg = """
+✅ <b>버핏 주식 분석 봇 시작!</b>
+
+서버에 정상 연결되었습니다 🎉
+
+━━━━━━━━━━━━━━━━
+📋 <b>사용 가능한 명령어</b>
+
+🔍 /분석 AAPL     → 종목 분석
+⭐ /관심추가 TSLA  → 관심 종목 등록
+📋 /관심목록       → 관심 종목 보기
+🗑️ /관심삭제 TSLA  → 종목 삭제
+❓ /도움말         → 명령어 전체 보기
+━━━━━━━━━━━━━━━━
+
+지금 바로 사용해보세요!
+예) <code>/분석 AAPL</code>
+"""
+    send(MY_CHAT_ID, msg)
+
+
 # ── 종목 분석 실행 ───────────────────────────────────────────
 def analyze_stock(ticker, chat_id):
     send(chat_id, f"🔄 <b>{ticker}</b> 분석 중... 잠시만 기다려주세요!")
@@ -62,7 +89,6 @@ def analyze_stock(ticker, chat_id):
     score_result = calculate_score(data)
     fv_result    = calculate_fair_value(data)
 
-    # DB 저장
     try:
         save_analysis(
             ticker        = ticker,
@@ -79,26 +105,22 @@ def analyze_stock(ticker, chat_id):
     except Exception:
         pass
 
-    # ── 결과 메시지 조합 ──────────────────────────────────
     grade      = score_result.get("grade", "N/A")
     total_sc   = score_result.get("total_score", 0)
     grade_desc = score_result.get("grade_desc", "")
     scores     = score_result.get("scores", {})
     good       = score_result.get("reasons_good", [])
     bad        = score_result.get("reasons_bad", [])
-
     cur_price  = data.get("current_price", 0)
     fair_val   = fv_result.get("fair_value", 0)
     val_label  = fv_result.get("valuation_label", "")
     day_chg    = data.get("day_change_pct", 0)
-
-    name   = data.get("name", ticker)
-    sector = data.get("sector", "N/A")
-    pe     = data.get("pe_ratio", 0) or 0
-    roe    = (data.get("roe", 0) or 0) * 100
-    dy     = (data.get("dividend_yield", 0) or 0) * 100
-
-    chg_icon = "▲" if day_chg >= 0 else "▼"
+    name       = data.get("name", ticker)
+    sector     = data.get("sector", "N/A")
+    pe         = data.get("pe_ratio", 0) or 0
+    roe        = (data.get("roe", 0) or 0) * 100
+    dy         = (data.get("dividend_yield", 0) or 0) * 100
+    chg_icon   = "▲" if day_chg >= 0 else "▼"
 
     msg = f"""
 {grade_emoji(grade)} <b>{name} ({ticker})</b>
@@ -116,8 +138,8 @@ def analyze_stock(ticker, chat_id):
 
 ━━━━━━━━━━━━━━━━
 📊 <b>핵심 지표</b>
-   PER:      {f"{pe:.1f}배" if pe else "N/A"}
-   ROE:      {roe:.1f}%
+   PER:       {f"{pe:.1f}배" if pe else "N/A"}
+   ROE:       {roe:.1f}%
    배당수익률: {f"{dy:.2f}%" if dy > 0 else "무배당"}
 
 ━━━━━━━━━━━━━━━━
@@ -128,73 +150,63 @@ def analyze_stock(ticker, chat_id):
    배당/주주:  {scores.get("dividend",0)}/15점
    리스크:    {scores.get("risk",0)}/15점
 """
-
     if good:
         msg += "\n✅ <b>강점</b>\n"
         for g in good[:3]:
             msg += f"   · {g}\n"
-
     if bad:
         msg += "\n⚠️ <b>리스크</b>\n"
         for b in bad[:3]:
             msg += f"   · {b}\n"
 
-    msg += "\n⚠️ <i>분석 결과는 참고용입니다. 투자 책임은 본인에게 있습니다.</i>"
-
+    msg += "\n⚠️ <i>분석 결과는 참고용입니다.</i>"
     send(chat_id, msg)
 
 
-# ── 도움말 메시지 ─────────────────────────────────────────────
+# ── 도움말 ───────────────────────────────────────────────────
 HELP_MSG = """
 📈 <b>버핏 주식 분석기 봇</b>
 
-사용 가능한 명령어:
-
 🔍 <b>/분석 티커</b>
    예) /분석 AAPL
-   → 종목 분석 결과 전송
 
 ⭐ <b>/관심추가 티커</b>
    예) /관심추가 TSLA
-   → 관심 종목 등록
 
 📋 <b>/관심목록</b>
-   → 등록한 관심 종목 보기
+   등록한 관심 종목 보기
 
 🗑️ <b>/관심삭제 티커</b>
    예) /관심삭제 TSLA
-   → 관심 종목 삭제
 
 ❓ <b>/도움말</b>
-   → 이 메시지 다시 보기
+   명령어 목록 다시 보기
 
 ━━━━━━━━━━━━━━━━
 💡 빠른 예시 종목:
-AAPL  MSFT  GOOGL  AMZN
-NVDA  META  TSLA  KO  JNJ
+AAPL MSFT GOOGL AMZN NVDA META TSLA KO JNJ
 """
 
 
 # ── 메시지 처리 ──────────────────────────────────────────────
 def handle_message(msg):
     chat_id = str(msg["chat"]["id"])
-    text    = msg.get("text","").strip()
+    text    = msg.get("text", "").strip()
 
-    # 본인만 사용 가능 (보안)
-    if str(MY_CHAT_ID) != "여기에_내_ID_입력" and chat_id != str(MY_CHAT_ID):
-        send(chat_id, "❌ 권한이 없습니다.")
-        return
+    # 본인만 사용 가능
+    if MY_CHAT_ID and MY_CHAT_ID != "여기에_내_ID_입력":
+        if chat_id != str(MY_CHAT_ID):
+            send(chat_id, "❌ 권한이 없습니다.")
+            return
 
     if text in ["/start", "/시작"]:
-        send(chat_id, f"안녕하세요! 👋\n워렌 버핏 스타일 주식 분석 봇입니다.\n\n{HELP_MSG}")
-
+        send(chat_id, f"안녕하세요! 👋\n워렌 버핏 스타일 주식 분석 봇입니다.\n{HELP_MSG}")
     elif text.startswith("/분석"):
         parts = text.split()
         if len(parts) < 2:
             send(chat_id, "사용법: /분석 티커\n예) /분석 AAPL")
         else:
             analyze_stock(parts[1].upper(), chat_id)
-
     elif text.startswith("/관심추가"):
         parts = text.split()
         if len(parts) < 2:
@@ -203,18 +215,16 @@ def handle_message(msg):
             tk = parts[1].upper()
             add_watchlist(tk)
             send(chat_id, f"⭐ <b>{tk}</b> 관심 종목에 추가했습니다!")
-
     elif text == "/관심목록":
         wl = get_watchlist()
         if wl:
-            msg = "⭐ <b>관심 종목 목록</b>\n\n"
+            msg_text = "⭐ <b>관심 종목 목록</b>\n\n"
             for tk in wl:
-                msg += f"   · {tk}\n"
-            msg += "\n분석하려면: /분석 티커명"
-            send(chat_id, msg)
+                msg_text += f"   · {tk}\n"
+            msg_text += "\n분석: /분석 티커명"
+            send(chat_id, msg_text)
         else:
             send(chat_id, "관심 종목이 없습니다.\n/관심추가 티커 로 추가해보세요!")
-
     elif text.startswith("/관심삭제"):
         parts = text.split()
         if len(parts) < 2:
@@ -222,38 +232,36 @@ def handle_message(msg):
         else:
             tk = parts[1].upper()
             remove_watchlist(tk)
-            send(chat_id, f"🗑️ <b>{tk}</b> 관심 종목에서 삭제했습니다.")
-
+            send(chat_id, f"🗑️ <b>{tk}</b> 삭제했습니다.")
     elif text in ["/도움말", "/help"]:
         send(chat_id, HELP_MSG)
-
     else:
-        # 그냥 티커만 입력해도 분석
-        if text and text.replace("-","").replace(".","").isalpha() and len(text) <= 6:
-            analyze_stock(text.upper(), chat_id)
+        cleaned = text.replace("/", "").strip()
+        if cleaned and cleaned.replace("-","").replace(".","").isalpha() and len(cleaned) <= 6:
+            analyze_stock(cleaned.upper(), chat_id)
         else:
             send(chat_id, "❓ 알 수 없는 명령어입니다.\n/도움말 을 입력해보세요!")
 
 
-# ── 봇 실행 (폴링 방식) ─────────────────────────────────────
+# ── 봇 폴링 루프 ─────────────────────────────────────────────
 def run_bot():
     init_db()
     print("✅ 텔레그램 봇 시작!")
-    print("종료하려면 Ctrl+C")
+    send_startup_message()  # 시작 알림 전송
 
     offset = 0
     while True:
         try:
-            resp = requests.get(f"{BASE_URL}/getUpdates",
+            resp = requests.get(
+                f"{BASE_URL}/getUpdates",
                 params={"offset": offset, "timeout": 30},
-                timeout=35)
+                timeout=35,
+            )
             updates = resp.json().get("result", [])
-
             for update in updates:
                 offset = update["update_id"] + 1
                 if "message" in update:
                     handle_message(update["message"])
-
         except KeyboardInterrupt:
             print("\n봇 종료")
             break

@@ -5,6 +5,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import threading
 from datetime import datetime
 
 from data_collector import get_stock_info, get_price_history
@@ -64,6 +65,24 @@ st.markdown("""
 
 # ── DB 초기화 ─────────────────────────────────────────────────
 init_db()
+
+
+# ════════════════════════════════════════════════════════════
+# 텔레그램 봇 백그라운드 자동 실행
+# ════════════════════════════════════════════════════════════
+def _start_telegram_bot():
+    try:
+        from telegram_bot import run_bot, BOT_TOKEN
+        if BOT_TOKEN and BOT_TOKEN != "여기에_봇_토큰_입력":
+            t = threading.Thread(target=run_bot, daemon=True)
+            t.start()
+            print("✅ 텔레그램 봇 백그라운드 시작")
+    except Exception as e:
+        print(f"텔레그램 봇 시작 실패: {e}")
+
+if "bot_started" not in st.session_state:
+    st.session_state["bot_started"] = True
+    _start_telegram_bot()
 
 
 # ════════════════════════════════════════════════════════════
