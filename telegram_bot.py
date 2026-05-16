@@ -6,9 +6,10 @@
 import os
 import time
 import requests
-from data_collector import get_stock_info, get_dividend_history
-from score_engine   import calculate_score
-from fair_value     import calculate_fair_value
+from data_collector     import get_stock_info, get_dividend_history
+from score_engine       import calculate_score
+from fair_value         import calculate_fair_value
+from etf_score_engine   import calculate_etf_score
 from database       import (
     init_db, save_analysis,
     add_watchlist, remove_watchlist, get_watchlist,
@@ -26,9 +27,9 @@ def _get_secret(key, fallback=""):
         pass
     return os.environ.get(key, fallback)
 
-BOT_TOKEN   = _get_secret("BOT_TOKEN",   "여기에_봇_토큰_입력")
-MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "여기에_내_ID_입력")
-FINNHUB_KEY = _get_secret("FINNHUB_KEY", "")
+BOT_TOKEN   = _get_secret("BOT_TOKEN",   "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM")
+MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "8251554651")
+FINNHUB_KEY = _get_secret("FINNHUB_KEY", "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0")
 # ────────────────────────────────────────────────────────────
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -77,7 +78,40 @@ def send_startup_message():
     send(MY_CHAT_ID, msg)
 
 
-# ── 종목 분석 실행 ───────────────────────────────────────────
+# ── 뉴스 메시지 조합 ──────────────────────────────────────
+def _append_news(msg, news):
+    if news:
+        msg += "\n\n━━━━━━━━━━━━━━━━\n"
+        msg += "📰 <b>최근 뉴스 (한글)</b>\n"
+        for n in news[:3]:
+            ko  = n.get("headline_ko", "") or n.get("headline", "")
+            url = n.get("url", "")
+            msg += f"\n · <a href=\"{url}\">{ko}</a>\n"
+    return msg
+
+
+# ── 배당 메시지 조합 ───────────────────────────────────────
+def _append_dividend(msg, ticker, cur_price):
+    div_data = get_dividend_history(ticker)
+    if div_data.get("is_dividend_stock"):
+        cur_rate      = div_data.get("current_rate", 0)
+        frequency     = div_data.get("frequency", "")
+        annual        = div_data.get("annual", {})
+        div_yield_pct = (cur_rate / cur_price * 100) if cur_price > 0 else 0
+        msg += "\n\n━━━━━━━━━━━━━━━━\n"
+        msg += f"💵 <b>배당 정보 ({frequency})</b>\n"
+        msg += f"   연간 배당금:  ${cur_rate:.2f}/주\n"
+        msg += f"   배당수익률:   {div_yield_pct:.2f}%\n"
+        if annual:
+            msg += "\n   📊 연도별 배당금\n"
+            for yr in sorted(annual.keys(), reverse=True)[:3]:
+                msg += f"   {yr}년: ${annual[yr]:.2f}\n"
+    else:
+        msg += "\n\n💵 <b>배당:</b> 무배당 종목\n"
+    return msg
+
+
+# ── 종목 분석 실행 (주식 + ETF 자동 분기) ──────────────────
 def analyze_stock(ticker, chat_id):
     send(chat_id, f"🔄 <b>{ticker}</b> 분석 중... 잠시만 기다려주세요!")
 
@@ -86,41 +120,49 @@ def analyze_stock(ticker, chat_id):
         send(chat_id, f"❌ 오류: {data['error']}\n티커를 다시 확인해주세요.")
         return
 
+    # ── ETF / 주식 분기 ──────────────────────────────────────
+    if data.get("is_etf"):
+        _analyze_etf(ticker, chat_id, data)
+    else:
+        _analyze_stock(ticker, chat_id, data)
+
+
+# ── 주식 분석 메시지 ──────────────────────────────────────
+def _analyze_stock(ticker, chat_id, data):
     score_result = calculate_score(data)
     fv_result    = calculate_fair_value(data)
 
     try:
         save_analysis(
-            ticker        = ticker,
-            name          = data.get("name", ticker),
-            current_price = data.get("current_price", 0),
-            fair_value    = fv_result.get("fair_value", 0),
-            discount_rate = fv_result.get("discount_rate", 0),
-            total_score   = score_result.get("total_score", 0),
-            grade         = score_result.get("grade", "N/A"),
-            scores        = score_result.get("scores", {}),
-            good          = score_result.get("reasons_good", []),
-            bad           = score_result.get("reasons_bad", []),
+            ticker=ticker, name=data.get("name", ticker),
+            current_price=data.get("current_price", 0),
+            fair_value=fv_result.get("fair_value", 0),
+            discount_rate=fv_result.get("discount_rate", 0),
+            total_score=score_result.get("total_score", 0),
+            grade=score_result.get("grade", "N/A"),
+            scores=score_result.get("scores", {}),
+            good=score_result.get("reasons_good", []),
+            bad=score_result.get("reasons_bad", []),
         )
     except Exception:
         pass
 
-    grade      = score_result.get("grade", "N/A")
-    total_sc   = score_result.get("total_score", 0)
-    grade_desc = score_result.get("grade_desc", "")
-    scores     = score_result.get("scores", {})
-    good       = score_result.get("reasons_good", [])
-    bad        = score_result.get("reasons_bad", [])
-    cur_price  = data.get("current_price", 0)
-    fair_val   = fv_result.get("fair_value", 0)
-    val_label  = fv_result.get("valuation_label", "")
-    day_chg    = data.get("day_change_pct", 0)
-    name       = data.get("name", ticker)
-    sector     = data.get("sector", "N/A")
-    pe         = data.get("pe_ratio", 0) or 0
-    roe        = (data.get("roe", 0) or 0) * 100
-    dy         = (data.get("dividend_yield", 0) or 0) * 100
-    chg_icon   = "▲" if day_chg >= 0 else "▼"
+    grade     = score_result.get("grade", "N/A")
+    total_sc  = score_result.get("total_score", 0)
+    g_desc    = score_result.get("grade_desc", "")
+    scores    = score_result.get("scores", {})
+    good      = score_result.get("reasons_good", [])
+    bad       = score_result.get("reasons_bad", [])
+    cur_price = data.get("current_price", 0)
+    fair_val  = fv_result.get("fair_value", 0)
+    val_label = fv_result.get("valuation_label", "")
+    day_chg   = data.get("day_change_pct", 0)
+    name      = data.get("name", ticker)
+    sector    = data.get("sector", "N/A")
+    pe        = data.get("pe_ratio", 0) or 0
+    roe       = (data.get("roe", 0) or 0) * 100
+    dy        = (data.get("dividend_yield", 0) or 0) * 100
+    chg_icon  = "▲" if day_chg >= 0 else "▼"
 
     msg = f"""
 {grade_emoji(grade)} <b>{name} ({ticker})</b>
@@ -128,7 +170,7 @@ def analyze_stock(ticker, chat_id):
 
 ━━━━━━━━━━━━━━━━
 🏆 <b>등급: {grade}  |  {total_sc}점 / 100점</b>
-   {grade_desc}
+   {g_desc}
 
 ━━━━━━━━━━━━━━━━
 💰 <b>가격 정보</b>
@@ -159,34 +201,96 @@ def analyze_stock(ticker, chat_id):
         for b in bad[:3]:
             msg += f"   · {b}\n"
 
-    # 배당 정보 추가
-    div_data = get_dividend_history(ticker)
-    if div_data.get("is_dividend_stock"):
-        cur_rate   = div_data.get("current_rate", 0)
-        frequency  = div_data.get("frequency", "")
-        annual     = div_data.get("annual", {})
-        div_yield_pct = (cur_rate / cur_price * 100) if cur_price > 0 else 0
-        msg += "\n\n━━━━━━━━━━━━━━━━\n"
-        msg += f"💵 <b>배당 정보 ({frequency})</b>\n"
-        msg += f"   연간 배당금:  ${cur_rate:.2f}/주\n"
-        msg += f"   배당수익률:   {div_yield_pct:.2f}%\n"
-        if annual:
-            msg += "\n   📊 연도별 배당금\n"
-            for yr in sorted(annual.keys(), reverse=True)[:3]:
-                msg += f"   {yr}년: ${annual[yr]:.2f}\n"
-    else:
-        msg += "\n\n💵 <b>배당:</b> 무배당 종목\n"
+    msg = _append_dividend(msg, ticker, cur_price)
+    msg = _append_news(msg, data.get("news", []))
+    msg += "\n\n⚠️ <i>분석 결과는 참고용입니다.</i>"
+    send(chat_id, msg)
 
-    # 뉴스 추가 (Finnhub 연동 시)
-    news = data.get("news", [])
-    if news:
-        msg += "\n\n━━━━━━━━━━━━━━━━\n"
-        msg += "📰 <b>최근 뉴스 (한글)</b>\n"
-        for n in news[:3]:
-            ko  = n.get("headline_ko", "") or n.get("headline", "")
-            url = n.get("url", "")
-            msg += f"\n · <a href=\"{url}\">{ko}</a>\n"
 
+# ── ETF 분석 메시지 ──────────────────────────────────────
+def _analyze_etf(ticker, chat_id, data):
+    score_result = calculate_etf_score(data)
+
+    try:
+        save_analysis(
+            ticker=ticker, name=data.get("name", ticker),
+            current_price=data.get("current_price", 0),
+            fair_value=0, discount_rate=0,
+            total_score=score_result.get("total_score", 0),
+            grade=score_result.get("grade", "N/A"),
+            scores=score_result.get("scores", {}),
+            good=score_result.get("reasons_good", []),
+            bad=score_result.get("reasons_bad", []),
+        )
+    except Exception:
+        pass
+
+    grade     = score_result.get("grade", "N/A")
+    total_sc  = score_result.get("total_score", 0)
+    g_desc    = score_result.get("grade_desc", "")
+    scores    = score_result.get("scores", {})
+    good      = score_result.get("reasons_good", [])
+    bad       = score_result.get("reasons_bad", [])
+    cur_price = data.get("current_price", 0)
+    day_chg   = data.get("day_change_pct", 0)
+    name      = data.get("name", ticker)
+    category  = data.get("category", "ETF")
+    expense   = (data.get("expense_ratio") or 0) * 100
+    aum       = data.get("total_assets") or 0
+    dy        = (data.get("dividend_yield") or 0) * 100
+    yr1       = (data.get("one_year_return") or 0) * 100
+    yr3       = (data.get("three_year_return") or 0) * 100
+    yr5       = (data.get("five_year_return") or 0) * 100
+    beta      = data.get("beta") or 1.0
+    chg_icon  = "▲" if day_chg >= 0 else "▼"
+
+    aum_b = aum / 1e9 if aum >= 1e9 else aum / 1e6
+    aum_u = "B" if aum >= 1e9 else "M"
+
+    msg = f"""
+📦 <b>{name} ({ticker})</b>
+🏷️ ETF | {category}
+
+━━━━━━━━━━━━━━━━
+🏆 <b>등급: {grade}  |  {total_sc}점 / 100점</b>
+   {g_desc}
+
+━━━━━━━━━━━━━━━━
+💰 <b>가격 정보</b>
+   현재 NAV:  ${cur_price:,.2f}  {chg_icon}{abs(day_chg):.2f}%
+   AUM:       ${aum_b:.1f}{aum_u}
+
+━━━━━━━━━━━━━━━━
+📊 <b>ETF 핵심 지표</b>
+   운용보수:  {f"{expense:.3f}%" if expense else "N/A"}
+   배당수익률: {f"{dy:.2f}%" if dy > 0 else "무배당"}
+   베타:      {beta:.2f}
+
+━━━━━━━━━━━━━━━━
+📈 <b>기간별 수익률</b>
+   1년:       {f"{yr1:+.1f}%" if yr1 else "N/A"}
+   3년 연평균: {f"{yr3:+.1f}%" if yr3 else "N/A"}
+   5년 연평균: {f"{yr5:+.1f}%" if yr5 else "N/A"}
+
+━━━━━━━━━━━━━━━━
+📋 <b>항목별 점수</b>
+   비용효율성: {scores.get("cost_efficiency",0)}/25점
+   수익성과:  {scores.get("performance",0)}/25점
+   안정성:    {scores.get("stability",0)}/20점
+   배당:      {scores.get("dividend",0)}/15점
+   유동성:    {scores.get("liquidity",0)}/15점
+"""
+    if good:
+        msg += "\n✅ <b>강점</b>\n"
+        for g in good[:3]:
+            msg += f"   · {g}\n"
+    if bad:
+        msg += "\n⚠️ <b>주의사항</b>\n"
+        for b in bad[:3]:
+            msg += f"   · {b}\n"
+
+    msg = _append_dividend(msg, ticker, cur_price)
+    msg = _append_news(msg, data.get("news", []))
     msg += "\n\n⚠️ <i>분석 결과는 참고용입니다.</i>"
     send(chat_id, msg)
 
