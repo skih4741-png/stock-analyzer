@@ -871,17 +871,19 @@ def _show_dividend_tab(ticker, cur_price):
         fig = go.Figure(go.Bar(
             x            = years,
             y            = values,
-            marker_color = ["#0d6efd" if y != max(years) else "#00C851" for y in years],
+            marker_color = ["#3b82f6" if y != max(years) else "#10b981" for y in years],
             text         = [f"${v:.2f}" for v in values],
             textposition = "outside",
-            textfont     = dict(color="#e0e0e0"),
+            textfont     = dict(color="#1e293b", size=13, family="Arial Black"),
         ))
         fig.update_layout(
-            paper_bgcolor="#0e1117",
-            plot_bgcolor ="#0e1117",
-            font  = dict(color="#e0e0e0"),
-            yaxis = dict(gridcolor="#1e2030", tickprefix="$", title="주당 배당금 ($)"),
-            xaxis = dict(gridcolor="#1e2030", title="연도"),
+            paper_bgcolor = "#ffffff",
+            plot_bgcolor  = "#f8f9fc",
+            font  = dict(color="#1e293b"),
+            yaxis = dict(gridcolor="#e2e8f0", tickprefix="$",
+                         title="주당 배당금 ($)", title_font=dict(color="#64748b")),
+            xaxis = dict(gridcolor="#e2e8f0", title="연도",
+                         title_font=dict(color="#64748b")),
             height= 300,
             margin= dict(t=40, b=20, l=0, r=0),
             showlegend=False,
@@ -895,19 +897,22 @@ def _show_dividend_tab(ticker, cur_price):
         # 테이블 헤더
         st.markdown("""
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
-                    background:#2d3039;border-radius:8px 8px 0 0;
-                    padding:10px 16px;font-size:.8rem;color:#9aa3b0;font-weight:700;">
-            <div>지급일</div>
-            <div style="text-align:center;">1주당 배당금</div>
-            <div style="text-align:right;">연도</div>
+                    background:#1e40af;border-radius:10px 10px 0 0;
+                    padding:12px 18px;font-size:.82rem;color:#ffffff;font-weight:700;
+                    letter-spacing:0.04em;">
+            <div>📅 지급일</div>
+            <div style="text-align:center;">💰 1주당 배당금</div>
+            <div style="text-align:right;">📆 연도</div>
         </div>""", unsafe_allow_html=True)
 
         for i, rec in enumerate(records):
-            bg    = "#1a1d24" if i % 2 == 0 else "#151820"
-            year  = rec["date"][:4]
-            month = rec["date"][5:7]
-            day   = rec["date"][8:10]
-            radius = "0" if i < len(records)-1 else "0 0 8px 8px"
+            bg     = "#ffffff" if i % 2 == 0 else "#f0f7ff"
+            year   = rec["date"][:4]
+            month  = rec["date"][5:7]
+            day    = rec["date"][8:10]
+            is_last = i == len(records) - 1
+            radius = "0 0 10px 10px" if is_last else "0"
+            border_b = "none" if is_last else "1px solid #e2e8f0"
 
             # 월 한글 변환
             month_names = {"01":"1월","02":"2월","03":"3월","04":"4월",
@@ -917,14 +922,17 @@ def _show_dividend_tab(ticker, cur_price):
 
             st.markdown(f"""
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
-                        background:{bg};padding:10px 16px;
-                        border-radius:{radius};border-bottom:1px solid #2d3039;
-                        font-size:.88rem;">
-                <div style="color:#1e293b;">{date_str}</div>
-                <div style="text-align:center;color:#00C851;font-weight:700;">
+                        background:{bg};padding:12px 18px;
+                        border-radius:{radius};border-bottom:{border_b};
+                        font-size:.9rem;border-left:1px solid #e2e8f0;
+                        border-right:1px solid #e2e8f0;">
+                <div style="color:#334155;font-weight:500;">{date_str}</div>
+                <div style="text-align:center;color:#059669;
+                            font-weight:800;font-size:1rem;">
                     ${rec['amount']:.4f}
                 </div>
-                <div style="text-align:right;color:#9aa3b0;">{year}년</div>
+                <div style="text-align:right;color:#64748b;
+                            font-size:.82rem;">{year}년</div>
             </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
