@@ -938,50 +938,52 @@ S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치�
 </p>
 </div>""", unsafe_allow_html=True)
 
-# ── 빠른 선택 버튼 (검색창 위) ─────────────────────────────
+# ── 세션 상태 초기화 ─────────────────────────────────────────
+if "input_ticker" not in st.session_state:
+    st.session_state["input_ticker"] = ""
+if "run_signal" not in st.session_state:
+    st.session_state["run_signal"] = False
+if "last_ran" not in st.session_state:
+    st.session_state["last_ran"] = ""
+
+# ── 빠른 선택 버튼 ───────────────────────────────────────────
 quick = ["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","BRK-B","JNJ","KO"]
 qcols = st.columns(len(quick))
 for i, qt in enumerate(quick):
     with qcols[i]:
         if st.button(qt, key=f"q_{qt}"):
-            # 세션에 저장하고 바로 분석 실행
-            st.session_state["auto_run_ticker"] = qt
+            st.session_state["input_ticker"] = qt   # 입력창에 채움
+            st.session_state["run_signal"]   = True  # 분석 실행 신호
 
 # ── 검색창 + 분석 버튼 ──────────────────────────────────────
 sc1, sc2 = st.columns([5, 1])
 with sc1:
-    # 빠른 선택 클릭 시 입력창에 자동 채움
-    prefill = st.session_state.pop("auto_run_ticker", "") or st.session_state.pop("search_ticker", "")
     ticker_input = st.text_input(
         "검색",
-        value=prefill,
-        placeholder="미국 주식 티커 입력 (예: AAPL, MSFT, TSLA, NVDA, GOOGL ...)",
-        label_visibility="collapsed",
-        key="ticker_box",
+        value = st.session_state["input_ticker"],
+        placeholder = "미국 주식 티커 입력 (예: AAPL, MSFT, TSLA, NVDA, GOOGL ...)",
+        label_visibility = "collapsed",
     )
+    # 사용자가 직접 타이핑 → 세션 동기화
+    st.session_state["input_ticker"] = ticker_input
 with sc2:
-    analyze_btn = st.button("🔍 분석하기", use_container_width=True, type="primary")
+    if st.button("🔍 분석하기", use_container_width=True, type="primary"):
+        st.session_state["run_signal"] = True
+
+# ── 엔터 감지 ─────────────────────────────────────────────────
+cur = ticker_input.strip().upper()
+if cur and cur != st.session_state["last_ran"]:
+    # 값이 바뀐 채로 rerun → 엔터 입력으로 간주
+    st.session_state["run_signal"] = True
 
 st.divider()
 
-# ── 실행 분기 ─────────────────────────────────────────────────
-# 조건 1: 분석 버튼 클릭
-# 조건 2: 빠른선택 버튼 클릭 (prefill 이 채워진 상태)
-# 조건 3: 엔터 입력 — ticker_input 이 바뀌면 자동 실행
-should_run = (
-    analyze_btn
-    or (prefill and prefill == ticker_input)   # 빠른선택 클릭
-)
-
-# 엔터 감지: 입력창 값과 마지막 실행 값이 다를 때 자동 실행
-last_ran = st.session_state.get("last_ran_ticker", "")
-if ticker_input and ticker_input != last_ran and not analyze_btn and not prefill:
-    # text_input은 엔터 치면 값이 확정됨 → 버튼 없이도 실행
-    should_run = True
-
-if should_run and ticker_input.strip():
+# ── 실행 ─────────────────────────────────────────────────────
+if st.session_state["run_signal"] and ticker_input.strip():
+    st.session_state["run_signal"] = False
     ticker_clean = ticker_input.strip().upper()
-    st.session_state["last_ran_ticker"] = ticker_clean
+    st.session_state["last_ran"]      = ticker_clean
+    st.session_state["input_ticker"]  = ticker_clean
     run_analysis(ticker_clean, finnhub_key)
 elif "last_result" in st.session_state:
     if st.session_state["last_result"].get("is_etf"):
