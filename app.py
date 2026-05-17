@@ -25,42 +25,142 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── 전역 CSS ─────────────────────────────────────────────────
+# 라이트 테마 강제 적용
 st.markdown("""
 <style>
-.stApp { background-color: #0e1117; }
+/* Streamlit 기본 다크 강제 해제 */
+[data-testid="stAppViewContainer"] {background-color: #f8f9fc !important;}
+[data-testid="stSidebar"] {background-color: #ffffff !important; border-right: 1px solid #e2e8f0;}
+[data-testid="stHeader"] {background-color: #f8f9fc !important;}
+section[data-testid="stSidebar"] > div {background-color: #ffffff !important;}
+</style>
+""", unsafe_allow_html=True)
+
+# ── 전역 CSS (화이트 테마) ───────────────────────────────────
+st.markdown("""
+<style>
+/* ── 전체 배경 ──────────────────────────── */
+.stApp                  { background-color: #f8f9fc !important; }
+body                    { color: #1e293b !important; }
+p, span, label, div     { color: #1e293b; }
+
+/* ── 사이드바 ───────────────────────────── */
+[data-testid="stSidebar"]          { background-color: #ffffff !important; }
+[data-testid="stSidebar"] *        { color: #1e293b !important; }
+[data-testid="stSidebar"] .stMarkdown { color: #1e293b !important; }
+
+/* ── 입력창 ─────────────────────────────── */
+input, textarea, select {
+    background-color: #ffffff !important;
+    color: #1e293b !important;
+    border: 1.5px solid #cbd5e1 !important;
+    border-radius: 8px !important;
+}
+input::placeholder { color: #94a3b8 !important; }
+
+/* ── 버튼 ───────────────────────────────── */
+.stButton > button {
+    background-color: #f1f5f9 !important;
+    color: #1e293b !important;
+    border: 1.5px solid #e2e8f0 !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    transition: all .15s;
+}
+.stButton > button:hover {
+    background-color: #e2e8f0 !important;
+    border-color: #2563eb !important;
+    color: #2563eb !important;
+}
+/* 분석하기 버튼 (primary) */
+.stButton > button[kind="primary"],
+button[data-testid="baseButton-primary"] {
+    background: linear-gradient(135deg,#2563eb,#1d4ed8) !important;
+    color: #ffffff !important;
+    border: none !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg,#1d4ed8,#1e40af) !important;
+    color: #ffffff !important;
+}
+
+/* ── 탭 ─────────────────────────────────── */
+[data-testid="stTabs"] button {
+    color: #64748b !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid transparent !important;
+}
+[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #2563eb !important;
+    border-bottom: 2px solid #2563eb !important;
+}
+
+/* ── dataframe ──────────────────────────── */
+[data-testid="stDataFrame"] {
+    background-color: #ffffff !important;
+    border-radius: 10px !important;
+    border: 1px solid #e2e8f0 !important;
+}
+
+/* ── 등급 배지 ──────────────────────────── */
 .grade-badge {
     display:inline-block; font-size:3rem; font-weight:900;
     width:90px; height:90px; line-height:90px;
-    text-align:center; border-radius:18px; color:#000;
-    box-shadow:0 4px 20px rgba(0,0,0,0.4);
+    text-align:center; border-radius:18px; color:#fff;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
 }
-.grade-S{background:linear-gradient(135deg,#FFD700,#FFA500);}
-.grade-A{background:linear-gradient(135deg,#00E676,#00C851);}
-.grade-B{background:linear-gradient(135deg,#40C4FF,#0091EA);color:#fff;}
-.grade-C{background:linear-gradient(135deg,#FFB300,#FF8F00);}
-.grade-D{background:linear-gradient(135deg,#FF5252,#C62828);color:#fff;}
-.grade-F{background:linear-gradient(135deg,#757575,#212121);color:#fff;}
-.metric-card{
-    background:#1a1d24; border:1px solid #2d3039;
-    border-radius:12px; padding:16px 20px; margin:4px 0;
+.grade-S{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;}
+.grade-A{background:linear-gradient(135deg,#10b981,#059669);color:#fff;}
+.grade-B{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;}
+.grade-C{background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;}
+.grade-D{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}
+.grade-F{background:linear-gradient(135deg,#6b7280,#4b5563);color:#fff;}
+
+/* ── 메트릭 카드 ────────────────────────── */
+.metric-card {
+    background: #ffffff;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin: 4px 0;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
 }
-.metric-label{font-size:.75rem;color:#9aa3b0;text-transform:uppercase;letter-spacing:.05em;}
-.metric-value{font-size:1.5rem;font-weight:700;color:#fff;margin-top:4px;}
-.metric-sub{font-size:.8rem;color:#9aa3b0;margin-top:2px;}
-.header-banner{
-    background:linear-gradient(135deg,#1a237e 0%,#0d47a1 50%,#01579b 100%);
+.metric-label {
+    font-size:.72rem; color:#64748b;
+    text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+}
+.metric-value { font-size:1.5rem; font-weight:800; color:#0f172a; margin-top:4px; }
+.metric-sub   { font-size:.8rem; color:#94a3b8; margin-top:2px; }
+
+/* ── 헤더 배너 ──────────────────────────── */
+.header-banner {
+    background: linear-gradient(135deg,#1e40af 0%,#2563eb 50%,#0ea5e9 100%);
     padding:28px 32px; border-radius:16px; margin-bottom:24px;
+    box-shadow: 0 4px 20px rgba(37,99,235,0.25);
 }
-.tag{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.82rem;font-weight:600;margin:3px;}
-.tag-good{background:#1b4332;color:#6fcf97;}
-.tag-bad{background:#3b1a1a;color:#f87171;}
-.news-card{
-    background:#1a1d24; border-left:3px solid #0d6efd;
-    padding:12px 16px; border-radius:0 8px 8px 0; margin:8px 0;
+
+/* ── 태그 ───────────────────────────────── */
+.tag{display:inline-block;padding:5px 12px;border-radius:20px;font-size:.82rem;font-weight:600;margin:3px;}
+.tag-good{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;}
+.tag-bad {background:#fee2e2;color:#dc2626;border:1px solid #fecaca;}
+
+/* ── 뉴스 카드 ──────────────────────────── */
+.news-card {
+    background:#f8fafc; border-left:4px solid #3b82f6;
+    padding:14px 18px; border-radius:0 10px 10px 0;
+    margin:8px 0; border:1px solid #e2e8f0; border-left-width:4px;
 }
-.news-headline{font-size:.9rem;color:#e0e0e0;font-weight:500;}
-.news-meta{font-size:.75rem;color:#6c757d;margin-top:4px;}
+.news-headline{font-size:.9rem;color:#1e293b;font-weight:600;}
+.news-meta    {font-size:.75rem;color:#94a3b8;margin-top:4px;}
+
+/* ── 점수 바 ────────────────────────────── */
+.score-bar-bg {background:#f1f5f9; border-radius:6px; height:12px; overflow:hidden;}
+
+/* ── 구분선 ─────────────────────────────── */
+hr { border-color: #e2e8f0 !important; }
+
+/* ── 캡션/서브텍스트 ────────────────────── */
+.stCaption, [data-testid="stCaptionContainer"] { color: #64748b !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -231,11 +331,11 @@ def show_result(result):
                 </div>
                 <div style="width:55px;text-align:right;font-size:.85rem;color:#e0e0e0;">{sc}/{mx}</div>
                 </div>""", unsafe_allow_html=True)
-            st.markdown(f"""<div style="margin-top:16px;padding:14px 18px;background:#1a1d24;
-                border-radius:10px;border:1px solid #2d3039;">
-                <span style="color:#9aa3b0;font-size:.85rem;">총점</span><br>
+            st.markdown(f"""<div style="margin-top:16px;padding:14px 18px;background:#f0f7ff;
+                border-radius:10px;border:2px solid #bfdbfe;">
+                <span style="color:#64748b;font-size:.85rem;font-weight:600;">총점</span><br>
                 <span style="font-size:2.2rem;font-weight:900;color:{g_color};">{total_sc}점</span>
-                <span style="color:#9aa3b0;"> / 100점</span>
+                <span style="color:#64748b;"> / 100점</span>
                 </div>""", unsafe_allow_html=True)
 
         with right:
@@ -254,12 +354,12 @@ def show_result(result):
             ))
             fig.update_layout(
                 polar=dict(
-                    bgcolor="rgba(26,29,36,1)",
+                    bgcolor="rgba(248,249,252,1)",
                     radialaxis=dict(visible=True,range=[0,100],
-                        tickfont=dict(color="#9aa3b0",size=9),gridcolor="#2d3039"),
-                    angularaxis=dict(tickfont=dict(color="#e0e0e0",size=11),gridcolor="#2d3039"),
+                        tickfont=dict(color="#64748b",size=9),gridcolor="#e2e8f0"),
+                    angularaxis=dict(tickfont=dict(color="#1e293b",size=11),gridcolor="#e2e8f0"),
                 ),
-                showlegend=False, paper_bgcolor="#0e1117",
+                showlegend=False, paper_bgcolor="#ffffff",
                 height=300, margin=dict(l=40,r=40,t=30,b=30),
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -325,7 +425,7 @@ def show_result(result):
             st.divider()
             st.markdown("##### 🏢 기업 개요")
             st.markdown(
-                f'<div style="color:#c0c0c0;font-size:.88rem;line-height:1.7;">'
+                f'<div style="color:#475569;font-size:.88rem;line-height:1.7;">'
                 f'{desc[:600]}{"..." if len(desc)>600 else ""}</div>',
                 unsafe_allow_html=True)
 
@@ -367,13 +467,13 @@ def show_result(result):
             hi52 = data.get("fifty_two_week_high",0)
             lo52 = data.get("fifty_two_week_low",0)
             pos  = data.get("price_position_52w",50)
-            st.markdown(f"""<div style="background:#1a1d24;border-radius:10px;padding:16px 20px;margin-top:8px;">
+            st.markdown(f"""<div style="background:#ffffff;border-radius:10px;padding:16px 20px;margin-top:8px;border:1px solid #e2e8f0;">
             <div style="display:flex;justify-content:space-between;font-size:.8rem;color:#9aa3b0;margin-bottom:8px;">
                 <span>52주 최저 ${lo52:,.2f}</span>
                 <span style="color:#FFD700;">현재가 ${cur_price:,.2f}</span>
                 <span>52주 최고 ${hi52:,.2f}</span>
             </div>
-            <div style="background:#2d3039;border-radius:6px;height:10px;position:relative;">
+            <div style="background:#f1f5f9;border-radius:6px;height:10px;position:relative;">
                 <div style="background:linear-gradient(90deg,#FF4444,#FFD700,#00C851);
                             width:{pos:.0f}%;height:100%;border-radius:6px;"></div>
                 <div style="position:absolute;left:{pos:.0f}%;transform:translateX(-50%);
@@ -416,10 +516,10 @@ def show_result(result):
                     annotation_text=f"평균 적정가 ${fair_val:,.2f}",
                     annotation_font_color="#00C851")
             fig3.update_layout(
-                paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
-                font=dict(color="#e0e0e0"),
-                yaxis=dict(gridcolor="#1e2030",tickprefix="$"),
-                xaxis=dict(gridcolor="#1e2030"),
+                paper_bgcolor="#ffffff", plot_bgcolor="#f8f9fc",
+                font=dict(color="#1e293b"),
+                yaxis=dict(gridcolor="#e2e8f0",tickprefix="$"),
+                xaxis=dict(gridcolor="#e2e8f0"),
                 height=350, showlegend=False, margin=dict(t=40,b=20),
             )
             st.plotly_chart(fig3, use_container_width=True)
@@ -561,11 +661,11 @@ def show_etf_result(result):
                 </div>
                 <div style="width:55px;text-align:right;font-size:.85rem;color:#e0e0e0;">{sc}/{mx}</div>
                 </div>''', unsafe_allow_html=True)
-            st.markdown(f'''<div style="margin-top:16px;padding:14px 18px;background:#1a1d24;
-                border-radius:10px;border:1px solid #2d3039;">
-                <span style="color:#9aa3b0;font-size:.85rem;">총점</span><br>
+            st.markdown(f'''<div style="margin-top:16px;padding:14px 18px;background:#f0f7ff;
+                border-radius:10px;border:2px solid #bfdbfe;">
+                <span style="color:#64748b;font-size:.85rem;font-weight:600;">총점</span><br>
                 <span style="font-size:2.2rem;font-weight:900;color:{g_color};">{total_sc}점</span>
-                <span style="color:#9aa3b0;"> / 100점</span>
+                <span style="color:#64748b;"> / 100점</span>
                 </div>''', unsafe_allow_html=True)
 
         with right:
@@ -584,12 +684,12 @@ def show_etf_result(result):
             ))
             fig.update_layout(
                 polar=dict(
-                    bgcolor="rgba(26,29,36,1)",
+                    bgcolor="rgba(248,249,252,1)",
                     radialaxis=dict(visible=True,range=[0,100],
-                        tickfont=dict(color="#9aa3b0",size=9),gridcolor="#2d3039"),
-                    angularaxis=dict(tickfont=dict(color="#e0e0e0",size=11),gridcolor="#2d3039"),
+                        tickfont=dict(color="#64748b",size=9),gridcolor="#e2e8f0"),
+                    angularaxis=dict(tickfont=dict(color="#1e293b",size=11),gridcolor="#e2e8f0"),
                 ),
-                showlegend=False, paper_bgcolor="#0e1117",
+                showlegend=False, paper_bgcolor="#ffffff",
                 height=300, margin=dict(l=40,r=40,t=30,b=30),
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -820,7 +920,7 @@ def _show_dividend_tab(ticker, cur_price):
                         background:{bg};padding:10px 16px;
                         border-radius:{radius};border-bottom:1px solid #2d3039;
                         font-size:.88rem;">
-                <div style="color:#e0e0e0;">{date_str}</div>
+                <div style="color:#1e293b;">{date_str}</div>
                 <div style="text-align:center;color:#00C851;font-weight:700;">
                     ${rec['amount']:.4f}
                 </div>
@@ -933,7 +1033,7 @@ with st.sidebar:
 st.markdown("""
 <div class="header-banner">
 <h1 style="color:#fff;margin:0;font-size:1.8rem;">📈 워렌 버핏 스타일 미국 주식 분석기</h1>
-<p style="color:#90caf9;margin:8px 0 0 0;font-size:.95rem;">
+<p style="color:#bfdbfe;margin:8px 0 0 0;font-size:.95rem;">
 S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치투자 기준 &nbsp;·&nbsp; 완전 무료
 </p>
 </div>""", unsafe_allow_html=True)
