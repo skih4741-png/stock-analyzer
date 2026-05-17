@@ -96,7 +96,7 @@ def get_stock_info(ticker: str, finnhub_key: str = "") -> dict:
             "operating_cashflow":info.get("operatingCashflow") or 0,
 
             # ── 배당 ──────────────────────────────────────────
-            "dividend_yield":            _safe(info.get("dividendYield")),
+            "dividend_yield":            _norm_yield(info.get("dividendYield"), info.get("dividendRate"), current_price),
             "dividend_rate":             _safe(info.get("dividendRate")),
             "payout_ratio":              _safe(info.get("payoutRatio")),
             "five_year_avg_div_yield":   _safe(info.get("fiveYearAvgDividendYield")),
@@ -158,6 +158,32 @@ def _safe(value, default=0):
         return default if (math.isnan(f) or math.isinf(f)) else f
     except (TypeError, ValueError):
         return default
+
+
+def _norm_yield(div_yield, div_rate, current_price):
+    """
+    배당수익률 정규화
+    yfinance 가 가끔 % 단위(예: 2.36) 로 반환할 때가 있어
+    소수(예: 0.0236) 와 % 혼재 → 정규화 필요
+    """
+    import math
+    val = _safe(div_yield)
+
+    # 0.3(30%) 초과면 이미 % 단위로 들어온 것 → 100 나눔
+    if val > 0.3:
+        val = val / 100
+
+    # 그래도 이상하면 직접 계산
+    if (val <= 0 or val > 0.3) and div_rate and current_price:
+        dr = _safe(div_rate)
+        cp = float(current_price)
+        if dr > 0 and cp > 0:
+            val = dr / cp
+
+    # 최종 상한 20% 캡 (데이터 오류 방지)
+    if math.isnan(val) or math.isinf(val) or val > 0.20:
+        return 0
+    return round(val, 6)
 
 
 def _translate_ko(text: str) -> str:
