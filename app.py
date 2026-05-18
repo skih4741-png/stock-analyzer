@@ -175,40 +175,54 @@ init_db()
 # ════════════════════════════════════════════════════════════
 # 텔레그램 봇 백그라운드 자동 실행
 # ════════════════════════════════════════════════════════════
-def _start_telegram_bot():
-    """
-    Streamlit secrets → 환경변수 → telegram_bot.py 직접 입력 순으로
-    토큰을 읽어서 봇 시작
-    """
+import os, sys
+
+# ── Secrets → 환경변수 주입 (모듈 임포트 전에 먼저 실행) ────
+def _inject_secrets():
     try:
-        # secrets 에서 직접 읽어서 환경변수로 주입
-        import os
+        for key in ("BOT_TOKEN", "MY_CHAT_ID", "FINNHUB_KEY"):
+            val = st.secrets.get(key, "")
+            if val:
+                os.environ[key] = str(val)
+    except Exception:
+        pass
+
+_inject_secrets()
+
+# ── 봇 스레드 전역 관리 (프로세스 단위) ─────────────────────
+_BOT_LOCK   = threading.Lock()
+_bot_thread = None
+
+def _start_telegram_bot():
+    global _bot_thread
+    with _BOT_LOCK:
+        # 이미 살아있는 스레드가 있으면 중복 시작 안 함
+        if _bot_thread is not None and _bot_thread.is_alive():
+            return
+
         try:
-            if st.secrets.get("BOT_TOKEN"):
-                os.environ["BOT_TOKEN"]   = st.secrets["BOT_TOKEN"]
-            if st.secrets.get("MY_CHAT_ID"):
-                os.environ["MY_CHAT_ID"]  = str(st.secrets["MY_CHAT_ID"])
-            if st.secrets.get("FINNHUB_KEY"):
-                os.environ["FINNHUB_KEY"] = st.secrets["FINNHUB_KEY"]
-        except Exception:
-            pass   # secrets 없으면 telegram_bot.py 직접 입력값 사용
+            # 환경변수 다시 주입 (혹시 모를 타이밍 이슈 방지)
+            _inject_secrets()
 
-        from telegram_bot import run_bot, BOT_TOKEN
-        if BOT_TOKEN and BOT_TOKEN not in ("여기에_봇_토큰_입력", ""):
-            t = threading.Thread(target=run_bot, daemon=True)
-            t.start()
-            print("✅ 텔레그램 봇 백그라운드 시작")
-        else:
-            print("⚠️ 텔레그램 봇 토큰 없음 — Secrets 확인 필요")
-    except Exception as e:
-        print(f"텔레그램 봇 시작 실패: {e}")
+            # telegram_bot 모듈을 매번 새로 로드해서 최신 환경변수 반영
+            if "telegram_bot" in sys.modules:
+                del sys.modules["telegram_bot"]
+            from telegram_bot import run_bot, BOT_TOKEN
 
-# 앱 전체 수명 동안 단 한 번만 실행
-# (session_state 가 아닌 전역 플래그 사용 → rerun 후에도 유지)
-import sys
-if not getattr(sys.modules[__name__], "_BOT_THREAD_STARTED", False):
-    sys.modules[__name__]._BOT_THREAD_STARTED = True
-    _start_telegram_bot()
+            if BOT_TOKEN and BOT_TOKEN not in ("여기에_봇_토큰_입력", ""):
+                _bot_thread = threading.Thread(
+                    target=run_bot,
+                    daemon=True,
+                    name="TelegramBotThread"
+                )
+                _bot_thread.start()
+                print("✅ 텔레그램 봇 시작!")
+            else:
+                print("⚠️ BOT_TOKEN 없음 — Streamlit Secrets 확인")
+        except Exception as e:
+            print(f"텔레그램 봇 시작 실패: {e}")
+
+_start_telegram_bot()
 
 
 # ════════════════════════════════════════════════════════════
@@ -1063,24 +1077,26 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════
 # 메인 화면
 # ════════════════════════════════════════════════════════════
-# 헤더 배너 + 갱신 버튼 (순수 Streamlit)
-hb1, hb2 = st.columns([5, 1])
-with hb1:
-    st.markdown("""
-    <div class="header-banner">
-        <h1 style="color:#fff;margin:0;font-size:1.8rem;">📈 워렌 버핏 스타일 미국 주식 분석기</h1>
-        <p style="color:#bfdbfe;margin:8px 0 0 0;font-size:.95rem;">
-        S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치투자 기준 &nbsp;·&nbsp; 완전 무료
-        </p>
-    </div>""", unsafe_allow_html=True)
-with hb2:
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    if st.button("🔄 갱신하기",
-                 use_container_width=True,
-                 help="연결이 끊겼을 때 클릭하면 앱이 다시 연결됩니다",
-                 key="refresh_header"):
-        st.cache_data.clear()
-        st.rerun()
+
+# ── 갱신하기 버튼 (최상단 단독) ─────────────────────────────
+if st.button(
+    "🔄 갱신하기",
+    key   = "refresh_main",
+    help  = "화면이 멈추거나 연결이 끊겼을 때 클릭하세요",
+    type  = "secondary",
+):
+    st.cache_data.clear()
+    st.session_state.clear()
+    st.rerun()
+
+# ── 헤더 배너 ────────────────────────────────────────────────
+st.markdown("""
+<div class="header-banner">
+    <h1 style="color:#fff;margin:0;font-size:1.8rem;">📈 워렌 버핏 스타일 미국 주식 분석기</h1>
+    <p style="color:#bfdbfe;margin:8px 0 0 0;font-size:.95rem;">
+    S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치투자 기준 &nbsp;·&nbsp; 완전 무료
+    </p>
+</div>""", unsafe_allow_html=True)
 
 # ── 세션 상태 초기화 ─────────────────────────────────────────
 if "input_ticker" not in st.session_state:
