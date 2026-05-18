@@ -1073,6 +1073,62 @@ with st.sidebar:
     if not get_latest_all():
         st.caption("아직 분석 기록이 없습니다")
 
+    st.divider()
+    st.markdown("#### 📱 텔레그램 봇")
+
+    # 봇 스레드 상태 확인
+    import sys
+    bot_mod  = sys.modules.get("telegram_bot")
+    bot_alive = False
+    try:
+        import threading
+        for t in threading.enumerate():
+            if t.name == "TelegramBotThread" and t.is_alive():
+                bot_alive = True
+                break
+    except Exception:
+        pass
+
+    if bot_alive:
+        st.success("🟢 봇 실행 중")
+    else:
+        st.error("🔴 봇 연결 안 됨")
+
+    # 테스트 메시지 전송 버튼
+    if st.button("📨 테스트 메시지 전송", use_container_width=True):
+        try:
+            _inject_secrets()
+            import os, requests as _req
+            token   = os.environ.get("BOT_TOKEN","")
+            chat_id = os.environ.get("MY_CHAT_ID","")
+            if not token or token == "여기에_봇_토큰_입력":
+                try:
+                    token   = st.secrets.get("BOT_TOKEN","")
+                    chat_id = str(st.secrets.get("MY_CHAT_ID",""))
+                except Exception:
+                    pass
+            if token and chat_id:
+                test_msg = "✅ 버핏 주식 분석기 연결 테스트 성공!\n봇이 정상 작동합니다 🎉"
+                resp = _req.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": test_msg, "parse_mode": "HTML"},
+                    timeout=10,
+                )
+                if resp.ok:
+                    st.success("✅ 텔레그램 전송 성공!")
+                else:
+                    st.error(f"❌ 전송 실패: {resp.text}")
+            else:
+                st.warning("⚠️ Secrets에 BOT_TOKEN / MY_CHAT_ID 확인 필요")
+        except Exception as e:
+            st.error(f"오류: {e}")
+
+    # 봇 수동 재시작 버튼
+    if st.button("🔁 봇 재시작", use_container_width=True):
+        _start_telegram_bot()
+        st.success("봇 재시작 시도 완료!")
+        st.rerun()
+
 
 # ════════════════════════════════════════════════════════════
 # 메인 화면
