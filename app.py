@@ -1081,18 +1081,12 @@ with st.sidebar:
 # ── 갱신하기 버튼 (최상단 단독) ─────────────────────────────
 _rc1, _rc2, _rc3 = st.columns([3, 1, 3])
 with _rc2:
-    if st.button(
-        "🔄 갱신",
-        key  = "refresh_main",
-        help = "화면이 멈췄을 때 클릭하세요",
+    st.link_button(
+        "🔄 갱신하기",
+        url  = "https://share.streamlit.io/?utm_source=streamlit&utm_medium=referral&utm_campaign=main&utm_content=-ss-streamlit-io-topright",
+        help = "클릭하면 Streamlit 관리 페이지로 이동합니다",
         use_container_width = True,
-    ):
-        st.toast("✅ 갱신 중...", icon="🔄")
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
-        st.rerun()
+    )
 
 # ── 헤더 배너 ────────────────────────────────────────────────
 st.markdown("""
