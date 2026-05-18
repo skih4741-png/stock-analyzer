@@ -161,7 +161,93 @@ hr { border-color: #e2e8f0 !important; }
 
 /* ── 캡션/서브텍스트 ────────────────────── */
 .stCaption, [data-testid="stCaptionContainer"] { color: #64748b !important; }
+
+/* ── 갱신 버튼 ──────────────────────────── */
+.refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.2);
+    color: #ffffff !important;
+    border: 1.5px solid rgba(255,255,255,0.5);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: .88rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all .2s;
+    backdrop-filter: blur(4px);
+}
+.refresh-btn:hover {
+    background: rgba(255,255,255,0.35);
+    border-color: #ffffff;
+    color: #ffffff !important;
+}
+.conn-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: .8rem;
+    color: rgba(255,255,255,0.85);
+}
+.conn-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4ade80;
+    animation: pulse 2s infinite;
+}
+.conn-dot.disconnected { background: #f87171; animation: none; }
+@keyframes pulse {
+    0%,100% { opacity:1; }
+    50%      { opacity:.4; }
+}
 </style>
+""", unsafe_allow_html=True)
+
+# ── 자동 재연결 JavaScript ───────────────────────────────────
+st.markdown("""
+<script>
+(function() {
+    // Streamlit 연결 끊김 감지 후 자동 재연결
+    let disconnected = false;
+    let reconnectTimer = null;
+
+    function checkConnection() {
+        const statusEl  = document.getElementById('conn-status-text');
+        const dotEl     = document.getElementById('conn-dot');
+        // Streamlit 연결 상태 확인: .stStatusWidget 또는 error 메시지 감지
+        const hasError  = document.querySelector('[data-testid="stException"]')
+                       || document.querySelector('.stError')
+                       || document.body.innerText.includes('Connection error')
+                       || document.body.innerText.includes('Please wait');
+
+        if (hasError) {
+            disconnected = true;
+            if (dotEl)    { dotEl.classList.add('disconnected'); }
+            if (statusEl) { statusEl.innerText = '재연결 중...'; }
+            if (!reconnectTimer) {
+                reconnectTimer = setTimeout(function() {
+                    window.location.reload();
+                }, 3000);  // 3초 후 자동 새로고침
+            }
+        } else {
+            disconnected = false;
+            reconnectTimer = null;
+            if (dotEl)    { dotEl.classList.remove('disconnected'); }
+            if (statusEl) { statusEl.innerText = '연결됨'; }
+        }
+    }
+
+    // 5초마다 연결 상태 체크
+    setInterval(checkConnection, 5000);
+
+    // 갱신 버튼 클릭 핸들러
+    window.doRefresh = function() {
+        window.location.reload();
+    };
+})();
+</script>
 """, unsafe_allow_html=True)
 
 # ── DB 초기화 ─────────────────────────────────────────────────
@@ -1040,11 +1126,31 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="header-banner">
-<h1 style="color:#fff;margin:0;font-size:1.8rem;">📈 워렌 버핏 스타일 미국 주식 분석기</h1>
-<p style="color:#bfdbfe;margin:8px 0 0 0;font-size:.95rem;">
-S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치투자 기준 &nbsp;·&nbsp; 완전 무료
-</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div>
+            <h1 style="color:#fff;margin:0;font-size:1.8rem;">📈 워렌 버핏 스타일 미국 주식 분석기</h1>
+            <p style="color:#bfdbfe;margin:8px 0 0 0;font-size:.95rem;">
+            S/A/B/C/D/F 자동 등급 &nbsp;·&nbsp; 적정가 추정 &nbsp;·&nbsp; 가치투자 기준 &nbsp;·&nbsp; 완전 무료
+            </p>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+            <button class="refresh-btn" onclick="doRefresh()">
+                🔄 갱신하기
+            </button>
+            <div class="conn-status">
+                <div class="conn-dot" id="conn-dot"></div>
+                <span id="conn-status-text">연결됨</span>
+            </div>
+        </div>
+    </div>
 </div>""", unsafe_allow_html=True)
+
+# ── 갱신하기 버튼 (Streamlit 네이티브 백업) ────────────────
+_r1, _r2, _r3 = st.columns([8, 1, 1])
+with _r3:
+    if st.button("🔄", help="페이지 갱신", key="refresh_top"):
+        st.cache_data.clear()
+        st.rerun()
 
 # ── 세션 상태 초기화 ─────────────────────────────────────────
 if "input_ticker" not in st.session_state:
