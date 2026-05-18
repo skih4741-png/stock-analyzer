@@ -1079,15 +1079,20 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════
 
 # ── 갱신하기 버튼 (최상단 단독) ─────────────────────────────
-if st.button(
-    "🔄 갱신하기",
-    key   = "refresh_main",
-    help  = "화면이 멈추거나 연결이 끊겼을 때 클릭하세요",
-    type  = "secondary",
-):
-    st.cache_data.clear()
-    st.session_state.clear()
-    st.rerun()
+_rc1, _rc2, _rc3 = st.columns([3, 1, 3])
+with _rc2:
+    if st.button(
+        "🔄 갱신",
+        key  = "refresh_main",
+        help = "화면이 멈췄을 때 클릭하세요",
+        use_container_width = True,
+    ):
+        st.toast("✅ 갱신 중...", icon="🔄")
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        st.rerun()
 
 # ── 헤더 배너 ────────────────────────────────────────────────
 st.markdown("""
