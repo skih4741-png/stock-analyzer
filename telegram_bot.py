@@ -1,871 +1,655 @@
 # ============================================================
-# telegram_bot.py — 워렌 버핏 주식 분석 텔레그램 봇
-# Streamlit Cloud secrets 에서 토큰/ID 자동으로 읽음
+# telegram_bot.py — 완전 독립형 텔레그램 봇
+# 실행: python telegram_bot.py
 # ============================================================
 
 import os
+import sys
 import time
 import threading
 import requests
-from datetime import datetime, timezone
-from data_collector     import get_stock_info, get_dividend_history
-from score_engine       import calculate_score
-from fair_value         import calculate_fair_value
-from etf_score_engine   import calculate_etf_score
-from database       import (
-    init_db, save_analysis,
-    add_watchlist, remove_watchlist, get_watchlist,
-)
-from nasdaq_stocks  import NASDAQ_STOCKS, SECTOR_LABELS
+from datetime import datetime
 
-# ── 설정값 읽기 (Streamlit secrets → 파일 직접 입력 순서) ────
-def _get_secret(key, fallback=""):
-    """Streamlit secrets → 환경변수 → 직접입력 순으로 읽기"""
-    try:
-        import streamlit as st
-        val = st.secrets.get(key, "")
-        if val:
-            return val
-    except Exception:
-        pass
-    return os.environ.get(key, fallback)
+# ── 설정 읽기 ────────────────────────────────────────────────
+def _read_config():
+    """환경변수 → Streamlit secrets → 파일 직접 입력 순으로 읽기"""
+    token   = os.environ.get("BOT_TOKEN",   "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM")
+    chat_id = os.environ.get("MY_CHAT_ID",  "8251554651")
+    fhub    = os.environ.get("FINNHUB_KEY", "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0")
 
-BOT_TOKEN   = _get_secret("BOT_TOKEN",   "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM")
-MY_CHAT_ID  = _get_secret("MY_CHAT_ID",  "8251554651")
-FINNHUB_KEY = _get_secret("FINNHUB_KEY", "FINNHUB_KEY", "d84186hr01qkm5c9s1agd84186hr01qkm5c9s1b0")
-# ────────────────────────────────────────────────────────────
+    if not token:
+        try:
+            import streamlit as st
+            token   = str(st.secrets.get("BOT_TOKEN",   "") or "")
+            chat_id = str(st.secrets.get("MY_CHAT_ID",  "") or "")
+            fhub    = str(st.secrets.get("FINNHUB_KEY", "") or "")
+        except Exception:
+            pass
 
+    # 파일에 직접 입력 (위 방법으로 못 읽을 때 사용)
+    if not token:
+        token   = "8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM"
+    if not chat_id:
+        chat_id = "8251554651"
+
+    return token.strip(), chat_id.strip(), fhub.strip()
+
+BOT_TOKEN, MY_CHAT_ID, FINNHUB_KEY = _read_config()
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# ── DB 초기화 ─────────────────────────────────────────────────
+try:
+    from database import (
+        init_db, save_analysis,
+        add_watchlist, remove_watchlist, get_watchlist,
+    )
+    init_db()
+except Exception as e:
+    print(f"DB 초기화 오류: {e}")
 
-# ── 메시지 전송 ──────────────────────────────────────────────
-def send(chat_id, text, parse_mode="HTML"):
-    try:
-        requests.post(f"{BASE_URL}/sendMessage", json={
-            "chat_id":    chat_id,
-            "text":       text,
-            "parse_mode": parse_mode,
-        }, timeout=10)
-    except Exception as e:
-        print(f"전송 오류: {e}")
-
-
-# ── 등급 이모지 ──────────────────────────────────────────────
-def grade_emoji(grade):
-    return {"S":"🥇","A":"🟢","B":"🔵","C":"🟡","D":"🔴","F":"⛔"}.get(grade,"⬜")
-
-
-# ── 시작 알림 메시지 전송 ────────────────────────────────────
-def send_startup_message():
-    """봇 시작 시 텔레그램으로 알림 전송"""
-    if not MY_CHAT_ID or MY_CHAT_ID == "여기에_내_ID_입력":
-        return
-    msg = """
-✅ <b>버핏 주식 분석 봇 시작!</b>
-
-서버에 정상 연결되었습니다 🎉
-
-━━━━━━━━━━━━━━━━
-📋 <b>사용 가능한 명령어</b>
-
-🔍 /분석 AAPL     → 종목 분석
-⭐ /관심추가 TSLA  → 관심 종목 등록
-📋 /관심목록       → 관심 종목 보기
-🗑️ /관심삭제 TSLA  → 종목 삭제
-❓ /도움말         → 명령어 전체 보기
-━━━━━━━━━━━━━━━━
-
-지금 바로 사용해보세요!
-예) <code>/분석 AAPL</code>
-"""
-    send(MY_CHAT_ID, msg)
+# ── 모듈 임포트 ───────────────────────────────────────────────
+try:
+    from data_collector   import get_stock_info, get_dividend_history
+    from score_engine     import calculate_score
+    from fair_value       import calculate_fair_value
+    from etf_score_engine import calculate_etf_score
+    from nasdaq_stocks    import NASDAQ_STOCKS, SECTOR_LABELS
+    MODULES_OK = True
+except Exception as e:
+    print(f"모듈 임포트 오류: {e}")
+    MODULES_OK = False
 
 
-# ── 뉴스 메시지 조합 ──────────────────────────────────────
-def _append_news(msg, news):
-    if news:
-        msg += "\n\n━━━━━━━━━━━━━━━━\n"
-        msg += "📰 <b>최근 뉴스 (한글)</b>\n"
-        for n in news[:3]:
-            ko  = n.get("headline_ko", "") or n.get("headline", "")
-            url = n.get("url", "")
-            msg += f"\n · <a href=\"{url}\">{ko}</a>\n"
-    return msg
+# ════════════════════════════════════════════════════════════
+# 유틸
+# ════════════════════════════════════════════════════════════
 
+GRADE_EMOJI = {"S":"🥇","A":"🟢","B":"🔵","C":"🟡","D":"🔴","F":"⛔"}
 
-# ── 배당 메시지 조합 ───────────────────────────────────────
-def _append_dividend(msg, ticker, cur_price):
-    div_data = get_dividend_history(ticker)
-    if div_data.get("is_dividend_stock"):
-        cur_rate      = div_data.get("current_rate", 0)
-        frequency     = div_data.get("frequency", "")
-        annual        = div_data.get("annual", {})
-        div_yield_pct = (cur_rate / cur_price * 100) if cur_price > 0 else 0
-        msg += "\n\n━━━━━━━━━━━━━━━━\n"
-        msg += f"💵 <b>배당 정보 ({frequency})</b>\n"
-        msg += f"   연간 배당금:  ${cur_rate:.2f}/주\n"
-        msg += f"   배당수익률:   {div_yield_pct:.2f}%\n"
-        if annual:
-            msg += "\n   📊 연도별 배당금\n"
-            for yr in sorted(annual.keys(), reverse=True)[:3]:
-                msg += f"   {yr}년: ${annual[yr]:.2f}\n"
-    else:
-        msg += "\n\n💵 <b>배당:</b> 무배당 종목\n"
-    return msg
-
-
-# ── 종목 분석 실행 (주식 + ETF 자동 분기) ──────────────────
-def analyze_stock(ticker, chat_id):
-    send(chat_id, f"🔄 <b>{ticker}</b> 분석 중... 잠시만 기다려주세요!")
-
-    data = get_stock_info(ticker.upper(), FINNHUB_KEY)
-    if "error" in data:
-        send(chat_id, f"❌ 오류: {data['error']}\n티커를 다시 확인해주세요.")
-        return
-
-    # ── ETF / 주식 분기 ──────────────────────────────────────
-    if data.get("is_etf"):
-        _analyze_etf(ticker, chat_id, data)
-    else:
-        _analyze_stock(ticker, chat_id, data)
-
-
-# ── 주식 분석 메시지 ──────────────────────────────────────
-def _analyze_stock(ticker, chat_id, data):
-    score_result = calculate_score(data)
-    fv_result    = calculate_fair_value(data)
-
-    try:
-        save_analysis(
-            ticker=ticker, name=data.get("name", ticker),
-            current_price=data.get("current_price", 0),
-            fair_value=fv_result.get("fair_value", 0),
-            discount_rate=fv_result.get("discount_rate", 0),
-            total_score=score_result.get("total_score", 0),
-            grade=score_result.get("grade", "N/A"),
-            scores=score_result.get("scores", {}),
-            good=score_result.get("reasons_good", []),
-            bad=score_result.get("reasons_bad", []),
-        )
-    except Exception:
-        pass
-
-    grade     = score_result.get("grade", "N/A")
-    total_sc  = score_result.get("total_score", 0)
-    g_desc    = score_result.get("grade_desc", "")
-    scores    = score_result.get("scores", {})
-    good      = score_result.get("reasons_good", [])
-    bad       = score_result.get("reasons_bad", [])
-    cur_price = data.get("current_price", 0)
-    fair_val  = fv_result.get("fair_value", 0)
-    val_label = fv_result.get("valuation_label", "")
-    day_chg   = data.get("day_change_pct", 0)
-    name      = data.get("name", ticker)
-    sector    = data.get("sector", "N/A")
-    pe        = data.get("pe_ratio", 0) or 0
-    roe       = (data.get("roe", 0) or 0) * 100
-    dy        = (data.get("dividend_yield", 0) or 0) * 100
-    chg_icon  = "▲" if day_chg >= 0 else "▼"
-
-    msg = f"""
-{grade_emoji(grade)} <b>{name} ({ticker})</b>
-📌 {sector}
-
-━━━━━━━━━━━━━━━━
-🏆 <b>등급: {grade}  |  {total_sc}점 / 100점</b>
-   {g_desc}
-
-━━━━━━━━━━━━━━━━
-💰 <b>가격 정보</b>
-   현재가:    ${cur_price:,.2f}  {chg_icon}{abs(day_chg):.2f}%
-   적정가:    ${fair_val:,.2f}
-   평가:      {val_label}
-
-━━━━━━━━━━━━━━━━
-📊 <b>핵심 지표</b>
-   PER:       {f"{pe:.1f}배" if pe else "N/A"}
-   ROE:       {roe:.1f}%
-   배당수익률: {f"{dy:.2f}%" if dy > 0 else "무배당"}
-
-━━━━━━━━━━━━━━━━
-📈 <b>항목별 점수</b>
-   재무안정성: {scores.get("financial_stability",0)}/25점
-   기업경쟁력: {scores.get("competitiveness",0)}/25점
-   밸류에이션: {scores.get("valuation",0)}/20점
-   배당/주주:  {scores.get("dividend",0)}/15점
-   리스크:    {scores.get("risk",0)}/15점
-"""
-    if good:
-        msg += "\n✅ <b>강점</b>\n"
-        for g in good[:3]:
-            msg += f"   · {g}\n"
-    if bad:
-        msg += "\n⚠️ <b>리스크</b>\n"
-        for b in bad[:3]:
-            msg += f"   · {b}\n"
-
-    msg = _append_dividend(msg, ticker, cur_price)
-    msg = _append_news(msg, data.get("news", []))
-    msg += "\n\n⚠️ <i>분석 결과는 참고용입니다.</i>"
-    send(chat_id, msg)
-
-
-# ── ETF 분석 메시지 ──────────────────────────────────────
-def _analyze_etf(ticker, chat_id, data):
-    score_result = calculate_etf_score(data)
-
-    try:
-        save_analysis(
-            ticker=ticker, name=data.get("name", ticker),
-            current_price=data.get("current_price", 0),
-            fair_value=0, discount_rate=0,
-            total_score=score_result.get("total_score", 0),
-            grade=score_result.get("grade", "N/A"),
-            scores=score_result.get("scores", {}),
-            good=score_result.get("reasons_good", []),
-            bad=score_result.get("reasons_bad", []),
-        )
-    except Exception:
-        pass
-
-    grade     = score_result.get("grade", "N/A")
-    total_sc  = score_result.get("total_score", 0)
-    g_desc    = score_result.get("grade_desc", "")
-    scores    = score_result.get("scores", {})
-    good      = score_result.get("reasons_good", [])
-    bad       = score_result.get("reasons_bad", [])
-    cur_price = data.get("current_price", 0)
-    day_chg   = data.get("day_change_pct", 0)
-    name      = data.get("name", ticker)
-    category  = data.get("category", "ETF")
-    expense   = (data.get("expense_ratio") or 0) * 100
-    aum       = data.get("total_assets") or 0
-    dy        = (data.get("dividend_yield") or 0) * 100
-    yr1       = (data.get("one_year_return") or 0) * 100
-    yr3       = (data.get("three_year_return") or 0) * 100
-    yr5       = (data.get("five_year_return") or 0) * 100
-    beta      = data.get("beta") or 1.0
-    chg_icon  = "▲" if day_chg >= 0 else "▼"
-
-    aum_b = aum / 1e9 if aum >= 1e9 else aum / 1e6
-    aum_u = "B" if aum >= 1e9 else "M"
-
-    msg = f"""
-📦 <b>{name} ({ticker})</b>
-🏷️ ETF | {category}
-
-━━━━━━━━━━━━━━━━
-🏆 <b>등급: {grade}  |  {total_sc}점 / 100점</b>
-   {g_desc}
-
-━━━━━━━━━━━━━━━━
-💰 <b>가격 정보</b>
-   현재 NAV:  ${cur_price:,.2f}  {chg_icon}{abs(day_chg):.2f}%
-   AUM:       ${aum_b:.1f}{aum_u}
-
-━━━━━━━━━━━━━━━━
-📊 <b>ETF 핵심 지표</b>
-   운용보수:  {f"{expense:.3f}%" if expense else "N/A"}
-   배당수익률: {f"{dy:.2f}%" if dy > 0 else "무배당"}
-   베타:      {beta:.2f}
-
-━━━━━━━━━━━━━━━━
-📈 <b>기간별 수익률</b>
-   1년:       {f"{yr1:+.1f}%" if yr1 else "N/A"}
-   3년 연평균: {f"{yr3:+.1f}%" if yr3 else "N/A"}
-   5년 연평균: {f"{yr5:+.1f}%" if yr5 else "N/A"}
-
-━━━━━━━━━━━━━━━━
-📋 <b>항목별 점수</b>
-   비용효율성: {scores.get("cost_efficiency",0)}/25점
-   수익성과:  {scores.get("performance",0)}/25점
-   안정성:    {scores.get("stability",0)}/20점
-   배당:      {scores.get("dividend",0)}/15점
-   유동성:    {scores.get("liquidity",0)}/15점
-"""
-    if good:
-        msg += "\n✅ <b>강점</b>\n"
-        for g in good[:3]:
-            msg += f"   · {g}\n"
-    if bad:
-        msg += "\n⚠️ <b>주의사항</b>\n"
-        for b in bad[:3]:
-            msg += f"   · {b}\n"
-
-    msg = _append_dividend(msg, ticker, cur_price)
-    msg = _append_news(msg, data.get("news", []))
-    msg += "\n\n⚠️ <i>분석 결과는 참고용입니다.</i>"
-    send(chat_id, msg)
-
-
-# ── 자동 알림 상태 저장 ────────────────────────────────────
-_alert_on = True   # 기본값: 켜짐
-
-
-# ── 도움말 ───────────────────────────────────────────────────
-HELP_MSG = """
-📈 <b>버핏 주식 분석기 봇</b>
-
-🔍 <b>/분석 티커</b>
-   예) /분석 AAPL
-
-⭐ <b>/관심추가 티커</b>
-   예) /관심추가 TSLA
-
-📋 <b>/관심목록</b>
-   등록한 관심 종목 보기
-
-🗑️ <b>/관심삭제 티커</b>
-   예) /관심삭제 TSLA
-
-🔔 <b>/매수알림 켜기</b>
-   매일 아침 자동 매수 알림 ON
-
-🔕 <b>/매수알림 끄기</b>
-   자동 알림 OFF
-
-📊 <b>/오늘분석</b>
-   관심 종목 전체 즉시 분석
-
-🔍 <b>/나스닥스캔</b>
-   나스닥 200종목 저평가 발굴 (즉시)
-
-❓ <b>/도움말</b>
-   명령어 목록 다시 보기
-
-━━━━━━━━━━━━━━━━
-💡 빠른 예시 종목:
-AAPL MSFT GOOGL AMZN NVDA META TSLA KO JNJ
-"""
-
-
-# ── 매수 추천 판단 기준 ──────────────────────────────────────
-def _is_buy_signal(grade, score, discount_rate):
-    """
-    매수 추천 조건:
-    - S급: 항상 추천
-    - A급: 저평가(적정가보다 낮음)일 때 추천
-    - B급: 5% 이상 저평가일 때 추천
-    """
-    if grade == "S":
-        return True
-    if grade == "A" and discount_rate >= 0:
-        return True
-    if grade == "B" and discount_rate >= 5:
-        return True
+def send(chat_id: str, text: str):
+    """메시지 전송 (재시도 2회)"""
+    for attempt in range(2):
+        try:
+            r = requests.post(
+                f"{BASE_URL}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=15,
+            )
+            if r.ok:
+                return True
+            print(f"전송 실패 ({attempt+1}): {r.text[:100]}")
+        except Exception as e:
+            print(f"전송 오류 ({attempt+1}): {e}")
+        time.sleep(2)
     return False
 
 
-# ── 나스닥 전체 종목 스캐너 ─────────────────────────────────
-def run_nasdaq_scan(chat_id, triggered_by="나스닥 스캔", batch_size=30):
-    """
-    나스닥 200종목을 배치로 스캔하여
-    S/A급 + 저평가 종목을 발굴해서 전송
-    """
-    import random
+def _safe_ticker(text: str) -> str:
+    """입력에서 티커 추출"""
+    return text.replace("/", "").replace(" ", "").upper()[:8]
 
-    total   = len(NASDAQ_STOCKS)
-    # 매번 다른 순서로 스캔 (다양성 확보)
-    tickers = random.sample(NASDAQ_STOCKS, min(batch_size, total))
 
-    send(chat_id,
-         f"🔍 <b>나스닥 종목 스캔 시작!</b> ({triggered_by})\n"
-         f"총 {batch_size}개 종목을 분석합니다...\n"
-         f"⏳ 약 2~3분 소요됩니다.")
+# ════════════════════════════════════════════════════════════
+# 분석 함수
+# ════════════════════════════════════════════════════════════
 
-    buy_picks  = []   # S/A급 + 저평가
-    scan_errors = 0
+def analyze_and_send(ticker: str, chat_id: str):
+    """종목/ETF 분석 후 메시지 전송"""
+    send(chat_id, f"🔄 <b>{ticker}</b> 분석 중... (10~20초 소요)")
 
-    for ticker in tickers:
-        try:
-            data = get_stock_info(ticker, FINNHUB_KEY)
-            if "error" in data or data.get("is_etf"):
-                continue
+    try:
+        data = get_stock_info(ticker, FINNHUB_KEY)
+        if "error" in data:
+            send(chat_id, f"❌ {data['error']}")
+            return
 
-            score_result  = calculate_score(data)
-            fv_result     = calculate_fair_value(data)
+        is_etf = data.get("is_etf", False)
 
-            grade         = score_result.get("grade", "N/A")
-            total_sc      = score_result.get("total_score", 0)
-            discount_rate = fv_result.get("discount_rate", 0)
-            cur_price     = data.get("current_price", 0)
-            fair_val      = fv_result.get("fair_value", 0)
-            sector        = data.get("sector", "N/A")
-            name          = data.get("name", ticker)
-            dy            = (data.get("dividend_yield") or 0) * 100
-            mc            = data.get("market_cap") or 0
-            mc_b          = mc / 1e9
+        if is_etf:
+            score = calculate_etf_score(data)
+            fv    = {}
+            disc  = 0
+        else:
+            score = calculate_score(data)
+            fv    = calculate_fair_value(data)
+            disc  = fv.get("discount_rate", 0)
 
-            # 매수 조건: S급 또는 A급+저평가 또는 B급+10%이상저평가
-            is_pick = (
-                (grade == "S") or
-                (grade == "A" and discount_rate >= 3) or
-                (grade == "B" and discount_rate >= 10)
+        grade     = score.get("grade", "N/A")
+        total_sc  = score.get("total_score", 0)
+        g_desc    = score.get("grade_desc", "")
+        scores    = score.get("scores", {})
+        good_list = score.get("reasons_good", [])
+        bad_list  = score.get("reasons_bad", [])
+
+        cur_price = data.get("current_price", 0)
+        fair_val  = fv.get("fair_value", 0)
+        val_label = fv.get("valuation_label", "")
+        day_chg   = data.get("day_change_pct", 0)
+        name      = data.get("name", ticker)
+        chg_icon  = "▲" if day_chg >= 0 else "▼"
+
+        # ── 메시지 작성 ────────────────────────────────────
+        if is_etf:
+            expense = (data.get("expense_ratio") or 0) * 100
+            aum     = data.get("total_assets") or 0
+            aum_b   = aum / 1e9 if aum >= 1e9 else aum / 1e6
+            aum_u   = "B" if aum >= 1e9 else "M"
+            dy      = (data.get("dividend_yield") or 0) * 100
+            yr1     = (data.get("one_year_return") or 0) * 100
+            yr3     = (data.get("three_year_return") or 0) * 100
+
+            msg = (
+                f"📦 <b>{name} ({ticker})</b> — ETF\n\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🏆 <b>{GRADE_EMOJI.get(grade,'')} {grade}등급 {total_sc}점</b>\n"
+                f"   {g_desc}\n\n"
+                f"💰 현재 NAV: ${cur_price:,.2f}  {chg_icon}{abs(day_chg):.2f}%\n"
+                f"   AUM: ${aum_b:.1f}{aum_u}\n"
+                f"   운용보수: {f'{expense:.3f}%' if expense else 'N/A'}\n"
+                f"   배당: {f'{dy:.2f}%' if dy else '무배당'}\n\n"
+                f"📈 수익률: 1년 {f'{yr1:+.1f}%' if yr1 else 'N/A'} | "
+                f"3년 {f'{yr3:+.1f}%' if yr3 else 'N/A'}\n\n"
+                f"📋 점수 상세\n"
+                f"   비용효율 {scores.get('cost_efficiency',0)}/25 | "
+                f"수익성과 {scores.get('performance',0)}/25\n"
+                f"   안정성 {scores.get('stability',0)}/20 | "
+                f"배당 {scores.get('dividend',0)}/15 | "
+                f"유동성 {scores.get('liquidity',0)}/15\n"
+            )
+        else:
+            pe  = data.get("pe_ratio", 0) or 0
+            roe = (data.get("roe", 0) or 0) * 100
+            dy  = (data.get("dividend_yield", 0) or 0) * 100
+
+            msg = (
+                f"{GRADE_EMOJI.get(grade,'')} <b>{name} ({ticker})</b>\n"
+                f"📌 {data.get('sector','N/A')}\n\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🏆 <b>{grade}등급 {total_sc}점</b> — {g_desc}\n\n"
+                f"💰 현재가: ${cur_price:,.2f}  {chg_icon}{abs(day_chg):.2f}%\n"
+            )
+            if fair_val > 0:
+                msg += f"   적정가: ${fair_val:,.2f}  ({val_label})\n"
+            msg += (
+                f"\n📊 핵심 지표\n"
+                f"   PER {f'{pe:.1f}배' if pe else 'N/A'} | "
+                f"ROE {roe:.1f}% | "
+                f"배당 {f'{dy:.2f}%' if dy else '무배당'}\n\n"
+                f"📋 점수 상세\n"
+                f"   재무안정 {scores.get('financial_stability',0)}/25 | "
+                f"경쟁력 {scores.get('competitiveness',0)}/25\n"
+                f"   밸류에이션 {scores.get('valuation',0)}/20 | "
+                f"배당 {scores.get('dividend',0)}/15 | "
+                f"리스크 {scores.get('risk',0)}/15\n"
             )
 
-            if is_pick and cur_price > 1:   # 페니스탁 제외
-                buy_picks.append({
-                    "ticker":        ticker,
-                    "name":          name,
-                    "grade":         grade,
-                    "score":         total_sc,
-                    "cur_price":     cur_price,
-                    "fair_val":      fair_val,
-                    "discount_rate": discount_rate,
-                    "sector":        sector,
-                    "div_yield":     dy,
-                    "market_cap_b":  mc_b,
-                })
+        if good_list:
+            msg += "\n✅ <b>강점</b>\n"
+            for g in good_list[:3]:
+                msg += f"  · {g}\n"
+        if bad_list:
+            msg += "\n⚠️ <b>리스크</b>\n"
+            for b in bad_list[:3]:
+                msg += f"  · {b}\n"
 
-            # DB 저장
-            try:
-                save_analysis(
-                    ticker=ticker, name=name,
-                    current_price=cur_price,
-                    fair_value=fair_val,
-                    discount_rate=discount_rate,
-                    total_score=total_sc, grade=grade,
-                    scores=score_result.get("scores", {}),
-                    good=score_result.get("reasons_good", []),
-                    bad=score_result.get("reasons_bad", []),
+        # 배당 히스토리
+        try:
+            div = get_dividend_history(ticker)
+            if div.get("is_dividend_stock"):
+                cr = div.get("current_rate", 0)
+                fr = div.get("frequency", "")
+                dy2 = cr / cur_price * 100 if cur_price else 0
+                msg += (
+                    f"\n💵 <b>배당 ({fr})</b>\n"
+                    f"   연간 ${cr:.2f}/주 | 수익률 {dy2:.2f}%\n"
                 )
-            except Exception:
-                pass
-
-            time.sleep(0.8)   # API 과부하 방지
-
+                annual = div.get("annual", {})
+                if annual:
+                    for yr in sorted(annual.keys(), reverse=True)[:2]:
+                        msg += f"   {yr}년: ${annual[yr]:.2f}\n"
         except Exception:
-            scan_errors += 1
+            pass
 
-    # ── 결과 메시지 ────────────────────────────────────────────
-    EMOJI = {"S":"🥇","A":"🟢","B":"🔵","C":"🟡","D":"🔴","F":"⛔"}
-    now_str = datetime.utcnow().strftime("%Y-%m-%d")
+        # 뉴스 (Finnhub 있을 때)
+        news = data.get("news", [])
+        if news:
+            msg += "\n📰 <b>최근 뉴스</b>\n"
+            for n in news[:2]:
+                ko  = n.get("headline_ko","") or n.get("headline","")
+                url = n.get("url","")
+                msg += f'  · <a href="{url}">{ko[:50]}</a>\n'
 
-    if not buy_picks:
-        send(chat_id,
-             f"📊 <b>나스닥 스캔 완료</b> ({now_str})\n\n"
-             f"스캔 종목: {batch_size}개\n"
-             f"현재 매수 조건 충족 종목 없음\n\n"
-             f"💡 시장 전반이 고평가 구간일 수 있습니다.")
-        return
+        msg += "\n⚠️ <i>참고용 분석입니다.</i>"
 
-    # 점수 + 저평가율 기준 정렬
-    buy_picks.sort(key=lambda x: (x["score"] + x["discount_rate"]), reverse=True)
-    top_picks = buy_picks[:8]   # 최대 8개
+        # DB 저장
+        try:
+            save_analysis(
+                ticker=ticker, name=name,
+                current_price=cur_price,
+                fair_value=fair_val,
+                discount_rate=disc,
+                total_score=total_sc, grade=grade,
+                scores=scores,
+                good=good_list, bad=bad_list,
+            )
+        except Exception:
+            pass
 
-    msg  = f"💎 <b>나스닥 저평가 발굴 종목!</b> ({now_str})\n"
-    msg += f"스캔 {batch_size}개 중 {len(buy_picks)}개 발견\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
+        send(chat_id, msg)
 
-    for i, item in enumerate(top_picks, 1):
-        g         = item["grade"]
-        sect_label = SECTOR_LABELS.get(item["sector"], item["sector"])
-        disc      = item["discount_rate"]
-        fv        = item["fair_val"]
-        dy        = item["div_yield"]
-        mc_b      = item["market_cap_b"]
-
-        disc_str = f"저평가 {disc:.1f}%" if disc > 0 else f"고평가 {abs(disc):.1f}%"
-        fv_str   = f"${fv:,.2f}" if fv > 0 else "산출불가"
-        dy_str   = f" | 배당 {dy:.1f}%" if dy > 0.3 else ""
-        mc_str   = f"${mc_b:.0f}B" if mc_b >= 1 else f"${mc_b*1000:.0f}M"
-
-        msg += (
-            f"\n{i}. {EMOJI.get(g,'⬜')} <b>{item['ticker']}</b> — {g}급 {item['score']}점\n"
-            f"   {item['name']}\n"
-            f"   {sect_label} | 시총 {mc_str}{dy_str}\n"
-            f"   현재가 ${item['cur_price']:,.2f} → 적정가 {fv_str}\n"
-            f"   📌 {disc_str}\n"
-        )
-
-    msg += "\n━━━━━━━━━━━━━━━━\n"
-    msg += "⚠️ <i>참고용 분석입니다. 투자 결정은 본인 판단으로 하세요.</i>"
-    send(chat_id, msg)
-
-    # 관심 종목 추가 안내
-    if len(top_picks) > 0:
-        guide = "💡 <b>관심 종목 추가 방법</b>\n"
-        for item in top_picks[:3]:
-            guide += f"   /관심추가 {item['ticker']}\n"
-        send(chat_id, guide)
+    except Exception as e:
+        send(chat_id, f"❌ 분석 오류: {str(e)[:100]}")
 
 
-# ── 관심 종목 전체 자동 분석 ────────────────────────────────
-def run_watchlist_analysis(chat_id, triggered_by="자동"):
+# ════════════════════════════════════════════════════════════
+# 관심 종목 전체 분석
+# ════════════════════════════════════════════════════════════
+
+def _is_buy_signal(grade, disc):
+    if grade == "S": return True
+    if grade == "A" and disc >= 0: return True
+    if grade == "B" and disc >= 10: return True
+    return False
+
+
+def run_watchlist_analysis(chat_id: str, triggered_by: str = "수동"):
     wl = get_watchlist()
     if not wl:
-        send(chat_id,
-             "⭐ 관심 종목이 없습니다.\n"
-             "/관심추가 티커 로 종목을 추가해보세요!")
+        send(chat_id, "⭐ 관심 종목이 없습니다.\n/관심추가 티커 로 추가해주세요!")
         return
 
-    send(chat_id,
-         f"🔄 <b>관심 종목 {len(wl)}개 분석 시작</b> ({triggered_by})\n"
-         f"잠시만 기다려주세요...")
+    send(chat_id, f"🔄 관심 종목 {len(wl)}개 분석 시작 ({triggered_by})")
 
-    buy_signals  = []   # 매수 추천 종목
-    hold_signals = []   # 보유/관망 종목
-    errors       = []   # 오류 종목
+    buys  = []
+    holds = []
 
     for ticker in wl:
         try:
             data = get_stock_info(ticker, FINNHUB_KEY)
             if "error" in data:
-                errors.append(ticker); continue
+                continue
 
-            if data.get("is_etf"):
-                score_result = calculate_etf_score(data)
-                fv_result    = {}
-                discount_rate = 0
+            is_etf = data.get("is_etf", False)
+            score  = calculate_etf_score(data) if is_etf else calculate_score(data)
+            fv     = calculate_fair_value(data) if not is_etf else {}
+
+            grade = score.get("grade", "N/A")
+            sc    = score.get("total_score", 0)
+            disc  = fv.get("discount_rate", 0)
+            price = data.get("current_price", 0)
+            fval  = fv.get("fair_value", 0)
+
+            item = dict(ticker=ticker, name=data.get("name",ticker),
+                        grade=grade, score=sc, price=price,
+                        fair=fval, disc=disc, is_etf=is_etf)
+
+            if _is_buy_signal(grade, disc):
+                buys.append(item)
             else:
-                score_result  = calculate_score(data)
-                fv_result     = calculate_fair_value(data)
-                discount_rate = fv_result.get("discount_rate", 0)
+                holds.append(item)
 
-            grade     = score_result.get("grade", "N/A")
-            total_sc  = score_result.get("total_score", 0)
-            cur_price = data.get("current_price", 0)
-            fair_val  = fv_result.get("fair_value", 0)
-
-            item = {
-                "ticker":        ticker,
-                "name":          data.get("name", ticker),
-                "grade":         grade,
-                "score":         total_sc,
-                "cur_price":     cur_price,
-                "fair_val":      fair_val,
-                "discount_rate": discount_rate,
-                "is_etf":        data.get("is_etf", False),
-            }
-
-            if _is_buy_signal(grade, total_sc, discount_rate):
-                buy_signals.append(item)
-            else:
-                hold_signals.append(item)
-
-            # DB 저장
             try:
                 save_analysis(
-                    ticker=ticker, name=data.get("name", ticker),
-                    current_price=cur_price,
-                    fair_value=fair_val,
-                    discount_rate=discount_rate,
-                    total_score=total_sc, grade=grade,
-                    scores=score_result.get("scores", {}),
-                    good=score_result.get("reasons_good", []),
-                    bad=score_result.get("reasons_bad", []),
+                    ticker=ticker, name=data.get("name",ticker),
+                    current_price=price, fair_value=fval,
+                    discount_rate=disc, total_score=sc, grade=grade,
+                    scores=score.get("scores",{}),
+                    good=score.get("reasons_good",[]),
+                    bad=score.get("reasons_bad",[]),
                 )
             except Exception:
                 pass
+            time.sleep(1)
+        except Exception:
+            continue
 
-            time.sleep(1)  # API 과부하 방지
-        except Exception as e:
-            errors.append(ticker)
-
-    # ── 결과 메시지 전송 ──────────────────────────────────────
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    EMOJI   = {"S":"🥇","A":"🟢","B":"🔵","C":"🟡","D":"🔴","F":"⛔"}
+    now = datetime.now().strftime("%m/%d %H:%M")
 
     # 매수 추천 메시지
-    if buy_signals:
-        msg = f"🚨 <b>매수 추천 종목 발견!</b> ({now_str})\n"
-        msg += "━━━━━━━━━━━━━━━━\n"
-        for item in sorted(buy_signals, key=lambda x: x["score"], reverse=True):
-            g    = item["grade"]
-            disc = item["discount_rate"]
-            fv   = item["fair_val"]
-            etf_tag = " 📦ETF" if item["is_etf"] else ""
-            disc_str = (f"저평가 {disc:.1f}%" if disc > 0
-                        else f"고평가 {abs(disc):.1f}%")
-            fv_str   = f"적정가 ${fv:,.2f}" if fv > 0 else "적정가 산출불가"
-            msg += (f"\n{EMOJI.get(g,'⬜')} <b>{item['ticker']}</b>{etf_tag} "
-                    f"— {g}급 {item['score']}점\n"
-                    f"   현재가 ${item['cur_price']:,.2f}  |  "
-                    f"{fv_str}\n"
-                    f"   📌 {disc_str}\n")
-        msg += "\n━━━━━━━━━━━━━━━━\n"
-        msg += "⚠️ <i>참고용 분석입니다. 투자 결정은 본인 판단으로 하세요.</i>"
+    if buys:
+        msg = f"🚨 <b>매수 추천!</b> ({now})\n━━━━━━━━━━━━━━━━\n"
+        for it in sorted(buys, key=lambda x: x["score"], reverse=True):
+            g = it["grade"]
+            d = it["disc"]
+            ds = f"저평가 {d:.1f}%" if d > 0 else f"고평가 {abs(d):.1f}%"
+            fv_str = f"→ 적정가 ${it['fair']:,.2f}" if it["fair"] > 0 else ""
+            msg += (
+                f"\n{GRADE_EMOJI.get(g,'')} <b>{it['ticker']}</b> {g}급 {it['score']}점\n"
+                f"  ${it['price']:,.2f} {fv_str}\n"
+                f"  📌 {ds}\n"
+            )
+        msg += "\n⚠️ <i>참고용입니다. 투자 판단은 본인이 하세요.</i>"
         send(chat_id, msg)
     else:
-        send(chat_id,
-             f"📊 <b>매수 추천 종목 없음</b> ({now_str})\n\n"
-             "현재 관심 종목 중 매수 조건을 충족하는 종목이 없습니다.\n"
-             "계속 모니터링 중입니다. 🔍")
+        send(chat_id, f"📊 매수 조건 충족 종목 없음 ({now})\n계속 모니터링 중 🔍")
 
-    # 전체 요약
-    if hold_signals or buy_signals:
-        summary = f"\n📋 <b>전체 관심 종목 현황</b>\n━━━━━━━━━━━━━━━━\n"
-        all_items = sorted(buy_signals + hold_signals,
-                           key=lambda x: x["score"], reverse=True)
-        for item in all_items:
-            g   = item["grade"]
-            tag = "✅매수" if item in buy_signals else "⏳관망"
-            summary += (f"{EMOJI.get(g,'⬜')} {item['ticker']:6} "
-                        f"{g}급 {item['score']:3}점  "
-                        f"${item['cur_price']:,.2f}  {tag}\n")
-        if errors:
-            summary += f"\n❌ 오류: {', '.join(errors)}"
-        send(chat_id, summary)
+    # 전체 현황
+    all_items = sorted(buys + holds, key=lambda x: x["score"], reverse=True)
+    summary = f"📋 <b>전체 현황</b> ({now})\n"
+    for it in all_items:
+        tag = "✅" if it in buys else "⏳"
+        summary += f"{GRADE_EMOJI.get(it['grade'],'')} {it['ticker']:6} {it['grade']}급 {it['score']}점  ${it['price']:,.2f}  {tag}\n"
+    send(chat_id, summary)
 
 
-# ── 미국 동부시간 계산 유틸 ─────────────────────────────────
-def _get_et_now():
-    """
-    현재 UTC 시간을 미국 동부시간(ET)으로 변환
-    EDT (여름, 3월 둘째 일요일 ~ 11월 첫째 일요일): UTC-4
-    EST (겨울, 나머지): UTC-5
-    """
-    utc_now = datetime.utcnow()
+# ════════════════════════════════════════════════════════════
+# 나스닥 스캔
+# ════════════════════════════════════════════════════════════
 
-    # DST 판단: 3월 둘째 일요일 ~ 11월 첫째 일요일
-    year = utc_now.year
+def run_nasdaq_scan(chat_id: str, batch_size: int = 30):
+    import random
+    tickers = random.sample(NASDAQ_STOCKS, min(batch_size, len(NASDAQ_STOCKS)))
+    send(chat_id, f"🔍 나스닥 {batch_size}개 스캔 시작! (2~3분 소요)")
 
-    # 3월 둘째 일요일
-    mar_first  = datetime(year, 3, 1)
-    days_to_sun = (6 - mar_first.weekday()) % 7
-    dst_start  = mar_first.replace(day=1 + days_to_sun + 7)
+    picks = []
+    for ticker in tickers:
+        try:
+            data = get_stock_info(ticker, FINNHUB_KEY)
+            if "error" in data or data.get("is_etf"):
+                continue
+            score = calculate_score(data)
+            fv    = calculate_fair_value(data)
+            grade = score.get("grade","N/A")
+            sc    = score.get("total_score",0)
+            disc  = fv.get("discount_rate",0)
+            price = data.get("current_price",0)
 
-    # 11월 첫째 일요일
-    nov_first  = datetime(year, 11, 1)
-    days_to_sun = (6 - nov_first.weekday()) % 7
-    dst_end    = nov_first.replace(day=1 + days_to_sun)
+            if ((grade == "S") or
+                (grade == "A" and disc >= 3) or
+                (grade == "B" and disc >= 10)) and price > 1:
+                picks.append(dict(
+                    ticker=ticker,
+                    name=data.get("name",ticker),
+                    sector=data.get("sector",""),
+                    grade=grade, score=sc, price=price,
+                    fair=fv.get("fair_value",0), disc=disc,
+                    mc=data.get("market_cap",0),
+                ))
+            time.sleep(0.8)
+        except Exception:
+            continue
 
-    is_edt = dst_start <= utc_now < dst_end
-    offset  = -4 if is_edt else -5   # EDT = UTC-4, EST = UTC-5
+    now = datetime.now().strftime("%m/%d %H:%M")
+    if not picks:
+        send(chat_id, f"📊 발굴 종목 없음 ({now})\n시장 전반 고평가 구간일 수 있습니다.")
+        return
 
-    et_now  = utc_now.replace(hour=(utc_now.hour + offset) % 24)
-    # 날짜 넘김 처리
+    picks.sort(key=lambda x: x["score"] + x["disc"], reverse=True)
+    msg = f"💎 <b>나스닥 저평가 발굴!</b> ({now})\n{batch_size}개 중 {len(picks)}개\n━━━━━━━━━━━━━━━━\n"
+    for i, it in enumerate(picks[:8], 1):
+        sect = SECTOR_LABELS.get(it["sector"], it["sector"])
+        mc_b = it["mc"] / 1e9
+        mc_str = f"${mc_b:.0f}B" if mc_b >= 1 else f"${mc_b*1000:.0f}M"
+        fv_str = f"→ ${it['fair']:,.2f}" if it["fair"] > 0 else ""
+        msg += (
+            f"\n{i}. {GRADE_EMOJI.get(it['grade'],'')} <b>{it['ticker']}</b> {it['grade']}급 {it['score']}점\n"
+            f"   {sect} | {mc_str}\n"
+            f"   ${it['price']:,.2f} {fv_str}\n"
+            f"   📌 저평가 {it['disc']:.1f}%\n"
+        )
+    msg += "\n⚠️ <i>참고용입니다.</i>"
+    send(chat_id, msg)
+
+    if picks:
+        guide = "💡 관심 종목 추가:\n"
+        for it in picks[:3]:
+            guide += f"   /관심추가 {it['ticker']}\n"
+        send(chat_id, guide)
+
+
+# ════════════════════════════════════════════════════════════
+# 자동 스케줄러 (나스닥 시간 기준)
+# ════════════════════════════════════════════════════════════
+
+_alert_on = True
+
+
+def _get_et_offset():
+    """현재 EDT/EST 오프셋 반환"""
     from datetime import timedelta
-    et_now = datetime.utcnow() + timedelta(hours=offset)
-    return et_now, is_edt
+    utc = datetime.utcnow()
+    yr  = utc.year
+    # 3월 둘째 일요일 DST 시작
+    mar1 = datetime(yr, 3, 1)
+    dst_start = mar1.replace(day=1 + (6 - mar1.weekday()) % 7 + 7)
+    # 11월 첫째 일요일 DST 종료
+    nov1 = datetime(yr, 11, 1)
+    dst_end = nov1.replace(day=1 + (6 - nov1.weekday()) % 7)
+    return -4 if dst_start <= utc < dst_end else -5
 
 
-def _et_to_kst_str(et_hour, et_min, is_edt):
-    """ET 시간을 KST 문자열로 변환"""
-    kst_offset = 13 if is_edt else 14   # EDT+13 or EST+14
-    kst_total  = et_hour * 60 + et_min + kst_offset * 60
-    kst_hour   = (kst_total // 60) % 24
-    kst_min    = kst_total % 60
-    period     = "오후" if kst_hour >= 12 else "오전"
-    h12        = kst_hour % 12 or 12
-    return f"{period} {h12}:{kst_min:02d}"
-
-
-# ── 자동 알림 스케줄러 ───────────────────────────────────────
 def _scheduler_loop():
-    """
-    나스닥 기준 최적 시간 2회 자동 알림:
-
-    1차 알림 — 장 시작 30분 전 (ET 09:00)
-        준비 알림: 오늘 매수 후보 예고
-        여름(EDT) 한국 밤 10:00 PM
-        겨울(EST) 한국 밤 11:00 PM
-
-    2차 알림 — 장 시작 1시간 후 (ET 10:30)
-        매수 판단 알림: 변동성 안정 후 최종 추천
-        여름(EDT) 한국 밤 11:30 PM
-        겨울(EST) 한국 자정 12:30 AM
-    """
     global _alert_on
-    last_alert1_date = None   # 1차 알림 마지막 날짜
-    last_alert2_date = None   # 2차 알림 마지막 날짜
+    last_alert1 = None
+    last_alert2 = None
+    last_scan   = None
 
     while True:
         try:
             if not _alert_on:
                 time.sleep(60); continue
 
-            et_now, is_edt = _get_et_now()
-            et_date    = et_now.date()
-            et_weekday = et_now.weekday()   # 0=월 ~ 6=일
-            et_hour    = et_now.hour
-            et_min     = et_now.minute
-            is_weekday = et_weekday < 5     # 미국 평일
+            utc    = datetime.utcnow()
+            offset = _get_et_offset()
+            from datetime import timedelta
+            et     = utc + timedelta(hours=offset)
+            wday   = et.weekday()   # 0=월 4=금 5=토
+            date   = et.date()
 
-            if not is_weekday:
-                time.sleep(300); continue   # 주말엔 5분마다 체크
-
-            season = "EDT(여름)" if is_edt else "EST(겨울)"
-            kst1   = _et_to_kst_str(9,  0, is_edt)
-            kst2   = _et_to_kst_str(10, 30, is_edt)
-
-            # ── 주간 나스닥 스캔: 토요일 ET 10:00 ─────────────
-            is_saturday = (et_weekday == 5)
-            if (is_saturday and et_hour == 10 and et_min < 5
-                    and last_alert1_date != et_date):
-                last_alert1_date = et_date
-                if MY_CHAT_ID and MY_CHAT_ID != "여기에_내_ID_입력":
-                    kst_scan = _et_to_kst_str(10, 0, is_edt)
+            # ── 평일 1차: ET 09:00 (장 시작 30분 전) ────────
+            if wday < 5 and et.hour == 9 and et.minute < 5 and last_alert1 != date:
+                last_alert1 = date
+                wl = get_watchlist()
+                if wl and MY_CHAT_ID not in ("여기에_내_ID_입력",""):
+                    kst_h = (9 + abs(offset) + 9) % 24
                     send(MY_CHAT_ID,
-                         f"📅 <b>주간 나스닥 저평가 종목 스캔!</b>\n"
-                         f"⏰ 미국 ET 10:00 ({season})\n"
-                         f"🇰🇷 한국시간 {kst_scan}\n\n"
-                         f"매주 토요일 나스닥 200종목 중\n"
-                         f"숨어있는 저평가 종목을 발굴합니다! 🔍")
-                    run_nasdaq_scan(MY_CHAT_ID,
-                                    triggered_by="주간 자동 스캔",
-                                    batch_size=50)
-                time.sleep(300)
-                continue
+                         f"🔔 <b>[1차] 나스닥 장 시작 30분 전!</b>\n"
+                         f"⏰ ET 09:00 | 🇰🇷 한국 {kst_h}:00\n\n"
+                         f"관심 종목 {len(wl)}개 분석합니다...")
+                    run_watchlist_analysis(MY_CHAT_ID, "1차 자동알림")
 
-            # ── 1차 알림: ET 09:00 (장 시작 30분 전) ──────────
-            if (et_hour == 9 and et_min < 5
-                    and last_alert1_date != et_date):
-                last_alert1_date = et_date
+            # ── 평일 2차: ET 10:30 (변동성 안정 후) ─────────
+            elif wday < 5 and et.hour == 10 and 30 <= et.minute < 35 and last_alert2 != date:
+                last_alert2 = date
                 wl = get_watchlist()
-                if wl and MY_CHAT_ID and MY_CHAT_ID != "여기에_내_ID_입력":
-                    msg = (
-                        f"🔔 <b>[1차 알림] 나스닥 장 시작 30분 전!</b>\n"
-                        f"⏰ 현재 미국 ET 09:00 ({season})\n"
-                        f"🇰🇷 한국시간 {kst1}\n\n"
-                        f"📋 관심 종목 {len(wl)}개 분석을 시작합니다.\n"
-                        f"변동성이 안정되는 10:30 AM ET에\n"
-                        f"최종 매수 추천을 다시 보내드립니다! 🎯"
-                    )
-                    send(MY_CHAT_ID, msg)
-                    run_watchlist_analysis(
-                        MY_CHAT_ID,
-                        triggered_by=f"1차 자동알림 (ET 09:00 / 한국 {kst1})"
-                    )
+                if wl and MY_CHAT_ID not in ("여기에_내_ID_입력",""):
+                    kst_h = (10 + abs(offset) + 9) % 24
+                    send(MY_CHAT_ID,
+                         f"🚀 <b>[2차] 변동성 안정 — 매수 판단 시점!</b>\n"
+                         f"⏰ ET 10:30 | 🇰🇷 한국 {kst_h}:30\n\n"
+                         f"최종 매수 추천을 분석합니다...")
+                    run_watchlist_analysis(MY_CHAT_ID, "2차 자동알림")
 
-            # ── 2차 알림: ET 10:30 (변동성 안정 후 매수 판단) ─
-            elif (et_hour == 10 and et_min >= 30 and et_min < 35
-                    and last_alert2_date != et_date):
-                last_alert2_date = et_date
-                wl = get_watchlist()
-                if wl and MY_CHAT_ID and MY_CHAT_ID != "여기에_내_ID_입력":
-                    msg = (
-                        f"🚀 <b>[2차 알림] 장 시작 1시간 — 매수 판단 시점!</b>\n"
-                        f"⏰ 현재 미국 ET 10:30 ({season})\n"
-                        f"🇰🇷 한국시간 {kst2}\n\n"
-                        f"✅ 장 초반 1시간 변동성이 안정됐습니다.\n"
-                        f"지금이 매수 판단 최적 시간입니다! 📈"
-                    )
-                    send(MY_CHAT_ID, msg)
-                    run_watchlist_analysis(
-                        MY_CHAT_ID,
-                        triggered_by=f"2차 자동알림 (ET 10:30 / 한국 {kst2})"
-                    )
+            # ── 토요일: 나스닥 전체 스캔 ─────────────────────
+            elif wday == 5 and et.hour == 10 and et.minute < 5 and last_scan != date:
+                last_scan = date
+                if MY_CHAT_ID not in ("여기에_내_ID_입력",""):
+                    send(MY_CHAT_ID, "📅 <b>주간 나스닥 저평가 스캔 시작!</b>")
+                    run_nasdaq_scan(MY_CHAT_ID, batch_size=50)
 
-            time.sleep(60)   # 1분마다 체크
+            time.sleep(60)
 
         except Exception as e:
             print(f"스케줄러 오류: {e}")
             time.sleep(60)
 
 
-# ── 메시지 처리 ──────────────────────────────────────────────
-def handle_message(msg):
-    chat_id = str(msg["chat"]["id"])
-    text    = msg.get("text", "").strip()
+# ════════════════════════════════════════════════════════════
+# 메시지 처리
+# ════════════════════════════════════════════════════════════
 
-    # 본인만 사용 가능
-    if MY_CHAT_ID and MY_CHAT_ID != "여기에_내_ID_입력":
-        if chat_id != str(MY_CHAT_ID):
-            send(chat_id, "❌ 권한이 없습니다.")
-            return
+HELP_MSG = """
+📈 <b>버핏 주식 분석기</b>
 
-    if text in ["/start", "/시작"]:
+🔍 /분석 AAPL     → 종목 분석
+⭐ /관심추가 AAPL → 관심 종목 등록
+📋 /관심목록      → 관심 종목 보기
+🗑 /관심삭제 AAPL → 관심 종목 삭제
+📊 /오늘분석      → 관심 종목 전체 즉시 분석
+🔍 /나스닥스캔   → 저평가 종목 발굴
+🔔 /매수알림 켜기 → 자동 알림 ON
+🔕 /매수알림 끄기 → 자동 알림 OFF
+❓ /도움말        → 이 메시지
+"""
+
+
+def handle_message(msg: dict):
+    chat_id = str(msg.get("chat", {}).get("id", ""))
+    text    = (msg.get("text") or "").strip()
+
+    # 권한 체크
+    if MY_CHAT_ID not in ("여기에_내_ID_입력","") and chat_id != MY_CHAT_ID:
+        send(chat_id, "❌ 권한이 없습니다.")
+        return
+
+    if not MODULES_OK:
+        send(chat_id, "⚠️ 서버 모듈 로딩 중입니다. 잠시 후 다시 시도해주세요.")
+        return
+
+    cmd   = text.split()[0].lower() if text else ""
+    args  = text.split()[1:]        if text else []
+
+    if cmd in ("/start", "/시작"):
         send(chat_id, f"안녕하세요! 👋\n워렌 버핏 스타일 주식 분석 봇입니다.\n{HELP_MSG}")
-    elif text.startswith("/분석"):
-        parts = text.split()
-        if len(parts) < 2:
+
+    elif cmd == "/분석":
+        if not args:
             send(chat_id, "사용법: /분석 티커\n예) /분석 AAPL")
         else:
-            analyze_stock(parts[1].upper(), chat_id)
-    elif text.startswith("/관심추가"):
-        parts = text.split()
-        if len(parts) < 2:
+            analyze_and_send(args[0].upper(), chat_id)
+
+    elif cmd == "/관심추가":
+        if not args:
             send(chat_id, "사용법: /관심추가 티커\n예) /관심추가 TSLA")
         else:
-            tk = parts[1].upper()
+            tk = args[0].upper()
             add_watchlist(tk)
             send(chat_id, f"⭐ <b>{tk}</b> 관심 종목에 추가했습니다!")
-    elif text == "/관심목록":
+
+    elif cmd == "/관심목록":
         wl = get_watchlist()
         if wl:
-            msg_text = "⭐ <b>관심 종목 목록</b>\n\n"
+            msg_txt = "⭐ <b>관심 종목</b>\n"
             for tk in wl:
-                msg_text += f"   · {tk}\n"
-            msg_text += "\n분석: /분석 티커명"
-            send(chat_id, msg_text)
+                msg_txt += f"  · {tk}\n"
+            msg_txt += "\n분석: /분석 티커명"
+            send(chat_id, msg_txt)
         else:
-            send(chat_id, "관심 종목이 없습니다.\n/관심추가 티커 로 추가해보세요!")
-    elif text.startswith("/관심삭제"):
-        parts = text.split()
-        if len(parts) < 2:
-            send(chat_id, "사용법: /관심삭제 티커\n예) /관심삭제 TSLA")
+            send(chat_id, "관심 종목이 없습니다.\n/관심추가 티커 로 추가하세요!")
+
+    elif cmd == "/관심삭제":
+        if not args:
+            send(chat_id, "사용법: /관심삭제 티커")
         else:
-            tk = parts[1].upper()
+            tk = args[0].upper()
             remove_watchlist(tk)
-            send(chat_id, f"🗑️ <b>{tk}</b> 삭제했습니다.")
-    elif text in ["/도움말", "/help"]:
+            send(chat_id, f"🗑 <b>{tk}</b> 삭제했습니다.")
+
+    elif cmd == "/오늘분석":
+        run_watchlist_analysis(chat_id, "수동 요청")
+
+    elif cmd == "/나스닥스캔":
+        run_nasdaq_scan(chat_id, batch_size=30)
+
+    elif cmd == "/매수알림":
+        global _alert_on
+        if args and args[0] == "켜기":
+            _alert_on = True
+            send(chat_id, "🔔 자동 매수 알림 ON!\n평일 ET 09:00 / 10:30 자동 분석합니다.")
+        elif args and args[0] == "끄기":
+            _alert_on = False
+            send(chat_id, "🔕 자동 알림 OFF")
+        else:
+            send(chat_id, "사용법: /매수알림 켜기  또는  /매수알림 끄기")
+
+    elif cmd in ("/도움말", "/help"):
         send(chat_id, HELP_MSG)
 
-    elif text == "/매수알림 켜기":
-        global _alert_on
-        _alert_on = True
-        send(chat_id,
-             "🔔 <b>매수 알림 ON!</b>\n\n"
-             "매일 오전 9시(평일)에 관심 종목을 자동 분석해서\n"
-             "매수 추천 종목이 있으면 알림을 보내드립니다.\n\n"
-             "📌 관심 종목 추가: /관심추가 티커")
-
-    elif text == "/매수알림 끄기":
-        _alert_on = False
-        send(chat_id,
-             "🔕 <b>매수 알림 OFF</b>\n\n"
-             "자동 알림이 꺼졌습니다.\n"
-             "다시 켜려면: /매수알림 켜기")
-
-    elif text == "/오늘분석":
-        run_watchlist_analysis(chat_id, triggered_by="수동 요청")
-
-    elif text == "/나스닥스캔":
-        send(chat_id,
-             "🔍 <b>나스닥 저평가 종목 스캔 시작!</b>\n"
-             "30개 종목을 분석합니다. 약 1~2분 소요됩니다...")
-        run_nasdaq_scan(chat_id, triggered_by="수동 스캔", batch_size=30)
-
-    else:
-        cleaned = text.replace("/", "").strip()
-        if cleaned and cleaned.replace("-","").replace(".","").isalpha() and len(cleaned) <= 6:
-            analyze_stock(cleaned.upper(), chat_id)
+    elif text and not text.startswith("/"):
+        # 그냥 티커만 입력해도 분석
+        clean = _safe_ticker(text)
+        if 1 <= len(clean) <= 6 and clean.replace("-","").isalpha():
+            analyze_and_send(clean, chat_id)
         else:
-            send(chat_id, "❓ 알 수 없는 명령어입니다.\n/도움말 을 입력해보세요!")
+            send(chat_id, "❓ 알 수 없는 명령어\n/도움말 을 입력해보세요!")
+    else:
+        send(chat_id, "❓ 알 수 없는 명령어\n/도움말 을 입력해보세요!")
 
 
-# ── 봇 폴링 루프 ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# 봇 실행 (폴링)
+# ════════════════════════════════════════════════════════════
+
+def _send_startup():
+    if MY_CHAT_ID in ("여기에_내_ID_입력",""):
+        return
+    offset = _get_et_offset()
+    is_edt = offset == -4
+    kst1   = f"{(9  + abs(offset) + 9) % 24}:00"
+    kst2   = f"{(10 + abs(offset) + 9) % 24}:30"
+    season = "EDT(여름)" if is_edt else "EST(겨울)"
+    msg = (
+        f"✅ <b>버핏 주식 분석 봇 시작!</b>\n\n"
+        f"서버 연결 완료 🎉\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"⏰ <b>자동 알림 ({season})</b>\n"
+        f"  1차: 한국 {kst1} (ET 09:00, 장 30분 전)\n"
+        f"  2차: 한국 {kst2} (ET 10:30, 변동성 안정)\n"
+        f"  주간: 토요일 나스닥 저평가 스캔\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"/도움말 을 입력하면 사용법을 알려드립니다!"
+    )
+    send(MY_CHAT_ID, msg)
+
+
 def run_bot():
-    init_db()
-    print("✅ 텔레그램 봇 시작!")
-    send_startup_message()  # 시작 알림 전송
+    print(f"✅ 텔레그램 봇 시작! token={BOT_TOKEN[:10]}...")
 
-    # 자동 스케줄러 백그라운드 실행
-    scheduler = threading.Thread(target=_scheduler_loop, daemon=True)
-    scheduler.start()
-    print("⏰ 자동 스케줄러 시작 (매일 오전 9시 자동 분석)")
+    # 시작 알림
+    _send_startup()
 
+    # 스케줄러 시작
+    t = threading.Thread(target=_scheduler_loop, daemon=True, name="Scheduler")
+    t.start()
+
+    # 폴링
     offset = 0
+    fail   = 0
     while True:
         try:
-            resp = requests.get(
+            r = requests.get(
                 f"{BASE_URL}/getUpdates",
                 params={"offset": offset, "timeout": 30},
-                timeout=35,
+                timeout=40,
             )
-            updates = resp.json().get("result", [])
-            for update in updates:
-                offset = update["update_id"] + 1
-                if "message" in update:
-                    handle_message(update["message"])
+            if not r.ok:
+                raise Exception(f"HTTP {r.status_code}")
+
+            updates = r.json().get("result", [])
+            fail    = 0   # 성공 시 실패 카운트 리셋
+
+            for upd in updates:
+                offset = upd["update_id"] + 1
+                if "message" in upd:
+                    try:
+                        handle_message(upd["message"])
+                    except Exception as e:
+                        print(f"메시지 처리 오류: {e}")
+
         except KeyboardInterrupt:
-            print("\n봇 종료")
+            print("봇 종료")
             break
         except Exception as e:
-            print(f"오류: {e}")
-            time.sleep(5)
+            fail += 1
+            wait  = min(5 * fail, 60)
+            print(f"폴링 오류 ({fail}회): {e} — {wait}초 후 재시도")
+            time.sleep(wait)
 
 
 if __name__ == "__main__":
+    if BOT_TOKEN in ("8915993122:AAE3JeBEHVqEdfo3_GBCDQB_4SKnj9NZ2EM", ""):
+        print("❌ BOT_TOKEN이 설정되지 않았습니다!")
+        print("telegram_bot.py 파일에서 BOT_TOKEN을 직접 입력하거나")
+        print("환경변수 BOT_TOKEN을 설정해주세요.")
+        sys.exit(1)
     run_bot()
